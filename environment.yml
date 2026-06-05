@@ -1,0 +1,19 @@
+name: audio-reconstruct
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.12.3
+  - pytorch
+  - torchaudio
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - scikit-learn
+  - librosa
+  - soundfile
+  - tqdm
+  - pip
+  - einops
+
