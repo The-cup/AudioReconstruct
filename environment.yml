@@ -16,4 +16,4 @@ dependencies:
   - tqdm
   - pip
   - einops
-
+  - pytest

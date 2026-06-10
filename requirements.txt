@@ -5,6 +5,9 @@ matplotlib
 scikit-learn
 librosa
 soundfile
-tqdm
+tqdm~=4.62.3
 einops
 
+torch
+torchaudio~=2.5.1
+pytest~=8.4.2
