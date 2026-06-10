@@ -7,18 +7,7 @@ __pycache__/
 .ruff_cache/
 .ipynb_checkpoints/
 
-data/*
-!data/.gitkeep
-!data/raw/
-!data/raw/.gitkeep
-!data/processed/
-!data/processed/.gitkeep
-!data/interim/
-!data/interim/.gitkeep
-!data/dataset/
-!data/dataset/.gitkeep
-!data/external/
-!data/external/.gitkeep
+data/
 
 artifacts/*
 !artifacts/.gitkeep
