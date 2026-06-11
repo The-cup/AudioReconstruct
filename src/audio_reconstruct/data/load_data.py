@@ -3,16 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from audio_reconstruct.datasets.audio_dataset import (
-    RAW_LIBRISPEECH_DIR,
     AudioReconstructionDataset,
     LibriSpeechRawDataset,
+    RAW_DATASETS_DIR,
 )
 
 
 def load_raw_data(
     dataset_name: str = "LibriSpeech",
     dataset_sub_name: str = "train-clean-100",
-    base_dir: str | Path = RAW_LIBRISPEECH_DIR.parent,
+    base_dir: str | Path = RAW_DATASETS_DIR,
 ) -> AudioReconstructionDataset:
     """Load a raw dataset by name.
 
@@ -29,7 +29,7 @@ def load_raw_data(
         raise ValueError(f"Unsupported dataset name: {dataset_name}")
 
     base_path = Path(base_dir)
-    dataset_root = base_path / dataset_name
+    dataset_root = base_path / dataset_name / dataset_sub_name
     if not dataset_root.exists():
         raise FileNotFoundError(f"Raw dataset directory does not exist: {dataset_root}")
 

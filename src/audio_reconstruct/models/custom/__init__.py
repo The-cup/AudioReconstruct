@@ -7,7 +7,6 @@ from audio_reconstruct.models.custom.voice_expand_gan import (
     VoiceExpandDiscriminatorLoss,
     VoiceExpandGAN,
     VoiceExpandGANConfig,
-    VoiceExpandGAM,
     VoiceExpandGenerator,
     VoiceExpandGeneratorLoss,
 )

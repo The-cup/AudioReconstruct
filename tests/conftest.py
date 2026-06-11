@@ -52,13 +52,13 @@ def _write_discrete_tone_wav(path: Path, midi_start: int) -> None:
 
 
 def _build_fake_librispeech_corpus(tmp_path: Path) -> tuple[Path, dict[str, dict[str, Path | str]]]:
-    raw_dataset_root = tmp_path / "data" / "raw" / "LibriSpeech" / "train-clean-100"
+    raw_dataset_root = tmp_path / "data" / "raw"
     expected: dict[str, dict[str, Path | str]] = {}
 
     for index, label in enumerate(LABELS, start=1):
         speaker_id = f"{index:04d}"
         chapter_id = f"{index:04d}"
-        chapter_dir = raw_dataset_root / speaker_id / chapter_id
+        chapter_dir = raw_dataset_root / "LibriSpeech" / "train-clean-100" / speaker_id / chapter_id
         audio_path = chapter_dir / f"{label}.wav"
         transcript_path = chapter_dir / f"{speaker_id}-{chapter_id}.trans.txt"
         text = "synthetic tone sequence"
@@ -73,7 +73,7 @@ def _build_fake_librispeech_corpus(tmp_path: Path) -> tuple[Path, dict[str, dict
             "text": text,
         }
 
-    return raw_dataset_root.parent, expected
+    return raw_dataset_root, expected
 
 
 @pytest.fixture()
@@ -100,20 +100,18 @@ def prepared_librispeech_datasets(
     from audio_reconstruct.tasks.collect_and_preprocess import preprocess_data
 
     raw_base_dir, expected = _build_fake_librispeech_corpus(tmp_path)
-    processed_base_dir = tmp_path / "data" / "dataset" / "LibriSpeech"
-    processed_dataset_dir = processed_base_dir / "train-clean-100"
+    processed_base_dir = tmp_path / "data" / "processed"
 
-    monkeypatch.setattr(preprocess_pipeline, "PROCESSED_LIBRISPEECH_ROOT", processed_base_dir)
+    monkeypatch.setattr(preprocess_pipeline, "PROCESSED_DATASETS_ROOT", processed_base_dir)
     monkeypatch.setattr(preprocess_pipeline, "DEFAULT_DATASET_SUB_NAME", "train-clean-100")
 
     raw_dataset = LibriSpeechRawDataset(base_dir=raw_base_dir, dataset_sub_name="train-clean-100")
     processed_dataset = preprocess_data(
         dataset=raw_dataset,
-        save_dir=processed_dataset_dir,
+        save_dir=processed_base_dir,
     )
     reloaded_processed_dataset = LibriSpeechDataset(
         base_dir=processed_base_dir,
-        dataset_sub_name="train-clean-100",
     )
     return {
         "raw_dataset": raw_dataset,
@@ -121,7 +119,6 @@ def prepared_librispeech_datasets(
         "reloaded_processed_dataset": reloaded_processed_dataset,
         "raw_base_dir": raw_base_dir,
         "processed_base_dir": processed_base_dir,
-        "processed_dataset_dir": processed_dataset_dir,
         "expected": expected,
         "dataset_module_dir": DATASET_MODULE_DIR,
     }

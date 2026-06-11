@@ -8,16 +8,17 @@ from audio_reconstruct.datasets.audio_dataset import AudioReconstructionDataset
 from audio_reconstruct.datasets.dataset_builder import build_dataset
 
 
-def collect_data(dataset_name: str = "LibriSpeech") -> AudioReconstructionDataset:
+def collect_data(dataset_name: str = "LibriSpeech", dataset_sub_name: str = "train-clean-100") -> AudioReconstructionDataset:
     """Load the raw dataset by name.
 
     Args:
         dataset_name: Name of the dataset to load.
+        dataset_sub_name: Subset name within the dataset.
 
     Returns:
         A dataset object that inherits from AudioReconstructionDataset.
     """
-    dataset = load_raw_data(dataset_name=dataset_name)
+    dataset = load_raw_data(dataset_name=dataset_name, dataset_sub_name=dataset_sub_name)
     if not isinstance(dataset, AudioReconstructionDataset):
         raise TypeError(
             "load_raw_data() must return an AudioReconstructionDataset-compatible object."
@@ -38,8 +39,7 @@ def preprocess_data(
     Returns:
         The processed dataset returned by the preprocessing pipeline.
     """
-    _ = save_dir
-    processed_dataset = run_preprocessing_pipeline(dataset)
+    processed_dataset = run_preprocessing_pipeline(dataset, save_dir)
     if not isinstance(processed_dataset, AudioReconstructionDataset):
         raise TypeError(
             "run_preprocessing_pipeline() must return an AudioReconstructionDataset-compatible object."

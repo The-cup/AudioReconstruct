@@ -19,14 +19,13 @@ from audio_reconstruct.data.preprocess.utils import (
 from audio_reconstruct.datasets.audio_dataset import (
     DATASET_MODULE_DIR,
     LibriSpeechDataset,
-    LibriSpeechRawDataset,
-    METADATA_FILENAME,
+    AudioReconstructionDataset,
 )
 
 
 LOGGER = logging.getLogger(__name__)
 
-PROCESSED_LIBRISPEECH_ROOT = Path(__file__).resolve().parents[4] / "data" / "dataset" / "LibriSpeech"
+PROCESSED_DATASETS_ROOT = Path(__file__).resolve().parents[4] / "data" / "processed"
 DEFAULT_DATASET_SUB_NAME = "train-clean-100"
 
 
@@ -42,18 +41,6 @@ def _get_item_value(item: Any, key: str, default: Any = None) -> Any:
     return default
 
 
-def _build_processed_file_path(
-    output_dir: Path,
-    label: str,
-    segment_index: int,
-    speaker_id: str | None = None,
-) -> Path:
-    speaker_dir = (speaker_id or "unknown_speaker").replace("/", "_").replace("\\", "_")
-    safe_label = label.replace("/", "_").replace("\\", "_")
-    target_dir = ensure_directory(output_dir / "features" / speaker_dir)
-    return target_dir / f"{safe_label}__seg{segment_index:04d}.pt"
-
-
 def _write_metadata(index_file: Path, processed_items: list[dict[str, str]]) -> None:
     ensure_directory(index_file.parent)
     with index_file.open("w", encoding="utf-8") as handle:
@@ -62,8 +49,8 @@ def _write_metadata(index_file: Path, processed_items: list[dict[str, str]]) -> 
 
 
 def run_preprocessing_pipeline(
-    dataset: LibriSpeechRawDataset,
-    save_dir: Path | None = PROCESSED_LIBRISPEECH_ROOT / DEFAULT_DATASET_SUB_NAME,
+    dataset: AudioReconstructionDataset,
+    save_dir: Path | None = None,
 ) -> LibriSpeechDataset:
     """Process raw LibriSpeech audio into 40-band log-mel features.
 
@@ -76,7 +63,6 @@ def run_preprocessing_pipeline(
         A processed LibriSpeechDataset instance indexed by metadata.
     """
     output_root = Path(save_dir) if save_dir is not None else None
-    metadata_file = output_root / METADATA_FILENAME if output_root is not None else None
 
     processed_items: list[dict[str, str]] = []
     total_source_items = len(dataset)
@@ -85,7 +71,6 @@ def run_preprocessing_pipeline(
     for raw_item in dataset:
         audio_path = Path(_get_item_value(raw_item, "file"))
         label = str(_get_item_value(raw_item, "label"))
-        speaker_id = _get_item_value(raw_item, "speaker_id")
 
         try:
             waveform, sample_rate = load_audio_file(audio_path)
@@ -115,26 +100,27 @@ def run_preprocessing_pipeline(
             mel_feature = waveform_to_log_mel(segment, sample_rate=TARGET_SAMPLE_RATE)
 
             if output_root is not None:
-                tensor_path = _build_processed_file_path(
-                    output_dir=output_root,
-                    label=label,
-                    segment_index=segment_index,
-                    speaker_id=str(speaker_id) if speaker_id is not None else None,
-                )
+                # tensor_path = _build_processed_file_path(
+                #     output_dir=output_root,
+                #     label=label,
+                #     segment_index=segment_index,
+                # )
+                tensor_path = output_root / f"{label}_seg{segment_index:04d}.pt"
+                ensure_directory(tensor_path.parent)
                 torch.save(mel_feature.to(torch.float32), tensor_path)
 
-                relative_path = os.path.relpath(tensor_path, DATASET_MODULE_DIR)
                 processed_items.append(
                     {
-                        "label": label,
-                        "file": str(relative_path),
+                        "label": tensor_path.stem,
+                        "file": str(tensor_path),
+                        "text": _get_item_value(raw_item, "text")
                     }
                 )
+    transcript_path = output_root / "transcript.txt"
+    with transcript_path.open("w", encoding="utf-8") as f:
+        for item in processed_items:
+            f.write(f'{item["label"]} {item["text"]}\n')
 
-    if output_root is not None and metadata_file is not None:
-        _write_metadata(metadata_file, processed_items)
-        LOGGER.info("Saved %d processed feature files into %s", len(processed_items), output_root)
-        return LibriSpeechDataset(base_dir=PROCESSED_LIBRISPEECH_ROOT, dataset_sub_name=DEFAULT_DATASET_SUB_NAME)
 
     LOGGER.info("Preprocessing finished without persistence because save_dir is None.")
-    return LibriSpeechDataset(base_dir=PROCESSED_LIBRISPEECH_ROOT, dataset_sub_name=DEFAULT_DATASET_SUB_NAME)
+    return LibriSpeechDataset(base_dir=PROCESSED_DATASETS_ROOT, dataset_sub_name=None)
