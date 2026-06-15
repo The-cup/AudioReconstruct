@@ -189,8 +189,53 @@ class LibriSpeechDataset(AudioReconstructionDataset):
         item = self._data_files[idx]
         file = torch.load(item.file, map_location="cpu")
         return {
-            "label": item.label,
+            "label": item.label,    # 文件名（无后缀）
+            "file": file,           # 文件内容，torch格式
+            "text": item.text,      # 文件内容对应文本
+            "path": Path(item.file).absolute(),  # 文件路径
+        }
+
+
+@dataclass(slots=True)
+class SpkEncDatasetItem:
+    speaker_id: str
+    file_path: Path
+
+
+class SpkEncDataset(AudioReconstructionDataset):
+    """Dataset for speaker embedding training."""
+    def __init__(
+        self,
+        processed_dataset_dir: Path | None = None,
+        randomize: bool = True,
+    ) -> None:
+        super().__init__()
+        self._randomize = randomize
+        self._data_files: [SpkEncDatasetItem] = []
+
+        if processed_dataset_dir is not None:
+            self.build_from_dir(processed_dataset_dir)
+
+    def build_from_dir(self, processed_dataset_dir: Path):
+        for speaker_dir in processed_dataset_dir.iterdir():
+            if not speaker_dir.is_dir():
+                continue
+            speaker_id = speaker_dir.name
+            for file_path in speaker_dir.iterdir():
+                if file_path.suffix != ".pt":
+                    continue
+                self._data_files.append(SpkEncDatasetItem(speaker_id=speaker_id, file_path=file_path))
+
+    def add_item(self, speaker_id: str, file_path: Path):
+        self._data_files.append(SpkEncDatasetItem(speaker_id=speaker_id, file_path=file_path))
+
+    def __len__(self) -> int:
+        return len(self._data_files)
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        item = self._data_files[idx]
+        file = torch.load(item.file_path, map_location="cpu")
+        return {
+            "speaker_id": item.speaker_id,
             "file": file,
-            "text": item.text,
-            "path": Path(item.file).absolute(),
         }

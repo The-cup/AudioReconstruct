@@ -27,20 +27,19 @@ def test_spkenc_reads_processed_dataset_and_embeds(
     from audio_reconstruct.models.registry import get_model
 
     reloaded_processed_dataset = prepared_librispeech_datasets["reloaded_processed_dataset"]
-    processed_dataset_dir = prepared_librispeech_datasets["processed_dataset_dir"]
+    processed_dataset_dir = prepared_librispeech_datasets["processed_base_dir"]
 
     assert isinstance(reloaded_processed_dataset, LibriSpeechDataset)
     assert len(reloaded_processed_dataset) == 18
 
     sample = reloaded_processed_dataset[0]
-    assert sample["feature"].shape == (160, 40)
-    assert sample["label"] in {"group0", "group1", "group2"}
-    assert sample["path"].startswith(str(processed_dataset_dir))
+    assert sample["file"].shape == (160, 40)
+    assert sample["path"].is_relative_to(processed_dataset_dir)
 
     model = get_model("spkenc")
     model.eval()
     with torch.no_grad():
-        embedding = model(sample["feature"].unsqueeze(0))
+        embedding = model(sample["file"].unsqueeze(0))
 
     assert embedding.shape == (1, 256)
     assert torch.allclose(embedding.norm(dim=-1), torch.ones(1), atol=1e-5)

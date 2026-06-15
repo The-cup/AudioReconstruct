@@ -1,8 +1,6 @@
-from audio_reconstruct.tasks.run_all import run_all_tasks
-
 
 def main() -> None:
-    run_all_tasks()
+    return None
 
 
 if __name__ == "__main__":

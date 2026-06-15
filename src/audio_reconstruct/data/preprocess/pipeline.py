@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +18,7 @@ from audio_reconstruct.data.preprocess.utils import (
 from audio_reconstruct.datasets.audio_dataset import (
     DATASET_MODULE_DIR,
     LibriSpeechDataset,
-    AudioReconstructionDataset,
+    AudioReconstructionDataset, SpkEncDataset, PROCESSED_DATASETS_DIR,
 )
 
 
@@ -48,10 +47,18 @@ def _write_metadata(index_file: Path, processed_items: list[dict[str, str]]) -> 
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 
-def run_preprocessing_pipeline(
+def _is_empty_dir(p: Path) -> bool:
+    # 先判断是不是目录，防止传入文件报错
+    if not p.is_dir():
+        raise NotADirectoryError(f"{p} 不是文件夹")
+    # 遍历第一个元素，无元素则为空
+    return next(p.iterdir(), None) is None
+
+
+def run_spkenc_preprocessing_pipeline(
     dataset: AudioReconstructionDataset,
-    save_dir: Path | None = None,
-) -> LibriSpeechDataset:
+    save_dir: Path = PROCESSED_DATASETS_DIR,
+) -> SpkEncDataset:
     """Process raw LibriSpeech audio into 40-band log-mel features.
 
     Args:
@@ -62,15 +69,21 @@ def run_preprocessing_pipeline(
     Returns:
         A processed LibriSpeechDataset instance indexed by metadata.
     """
-    output_root = Path(save_dir) if save_dir is not None else None
 
-    processed_items: list[dict[str, str]] = []
-    total_source_items = len(dataset)
-    LOGGER.info("Starting preprocessing for %d raw utterances", total_source_items)
+    spkenc_dataset = SpkEncDataset()
+
+    ensure_directory(save_dir)
+    if not _is_empty_dir(save_dir):
+        LOGGER.info("Loading processed dataset from %s", save_dir)
+        spkenc_dataset.build_from_dir(save_dir)
+        return spkenc_dataset
+
+    LOGGER.info("Starting preprocessing for %d raw utterances", len(dataset))
 
     for raw_item in dataset:
         audio_path = Path(_get_item_value(raw_item, "file"))
         label = str(_get_item_value(raw_item, "label"))
+        speaker_id = str(_get_item_value(raw_item, "speaker_id"))
 
         try:
             waveform, sample_rate = load_audio_file(audio_path)
@@ -98,29 +111,10 @@ def run_preprocessing_pipeline(
         segments = slice_waveform_into_segments(waveform)
         for segment_index, segment in enumerate(segments):
             mel_feature = waveform_to_log_mel(segment, sample_rate=TARGET_SAMPLE_RATE)
+            tensor_path = save_dir / speaker_id / f"{label}_seg{segment_index:04d}.pt"
+            torch.save(mel_feature.to(torch.float32), tensor_path)
 
-            if output_root is not None:
-                # tensor_path = _build_processed_file_path(
-                #     output_dir=output_root,
-                #     label=label,
-                #     segment_index=segment_index,
-                # )
-                tensor_path = output_root / f"{label}_seg{segment_index:04d}.pt"
-                ensure_directory(tensor_path.parent)
-                torch.save(mel_feature.to(torch.float32), tensor_path)
+            spkenc_dataset.add_item(speaker_id=speaker_id, file_path=tensor_path)
 
-                processed_items.append(
-                    {
-                        "label": tensor_path.stem,
-                        "file": str(tensor_path),
-                        "text": _get_item_value(raw_item, "text")
-                    }
-                )
-    transcript_path = output_root / "transcript.txt"
-    with transcript_path.open("w", encoding="utf-8") as f:
-        for item in processed_items:
-            f.write(f'{item["label"]} {item["text"]}\n')
-
-
-    LOGGER.info("Preprocessing finished without persistence because save_dir is None.")
-    return LibriSpeechDataset(base_dir=PROCESSED_DATASETS_ROOT, dataset_sub_name=None)
+    LOGGER.info(f"Preprocessing complete, {len(spkenc_dataset)} items saved at {save_dir}")
+    return spkenc_dataset

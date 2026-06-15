@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from copy import deepcopy
 from datetime import datetime
 import math
-import random
 from pathlib import Path
 from typing import Any
 
 import torch
 from torch import Tensor, nn
 from torch.optim import Adam
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
@@ -30,53 +28,87 @@ DEFAULT_LEARNING_RATE = 1e-4
 DEFAULT_WEIGHT_DECAY = 0.0
 
 
-def _normalize_string(value: Any) -> str:
-    if value is None:
-        return "unknown"
-    return str(value).strip()
+def _resolve_device(device: torch.device | str | None) -> torch.device:
+    return torch.device(device) if device is not None else torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
 
 
-def _extract_speaker_id(sample: Any) -> str:
-    if isinstance(sample, dict):
-        if sample.get("speaker_id") is not None:
-            return _normalize_string(sample["speaker_id"])
-        label = sample.get("label")
-    elif isinstance(sample, (tuple, list)):
-        label = sample[1] if len(sample) > 1 else None
-    else:
-        speaker_id = getattr(sample, "speaker_id", None)
-        if speaker_id is not None:
-            return _normalize_string(speaker_id)
-        label = getattr(sample, "label", None)
-
-    label_str = _normalize_string(label)
-    if "-" in label_str:
-        return label_str.split("-", maxsplit=1)[0]
-    return label_str
+def _is_data_loader(source: Any) -> bool:
+    return isinstance(source, DataLoader)
 
 
-def _extract_feature(sample: Any) -> Tensor:
-    if isinstance(sample, dict):
-        feature = sample.get("feature")
-        if feature is None:
-            feature = sample.get("input")
-    elif isinstance(sample, (tuple, list)):
-        feature = sample[0]
-    else:
-        feature = getattr(sample, "feature", None)
+def _unwrap_batch(batch: Any) -> Any:
+    if isinstance(batch, dict):
+        for key in ("feature", "features", "input", "inputs", "mel", "mels", "audio"):
+            value = batch.get(key)
+            if value is not None:
+                return value
+        return next(iter(batch.values()))
+    if isinstance(batch, (tuple, list)):
+        if not batch:
+            raise ValueError("Received an empty batch.")
+        return batch[0]
+    return batch
 
-    if feature is None:
-        raise ValueError("Dataset item does not contain a feature tensor.")
 
-    if not torch.is_tensor(feature):
-        feature = torch.as_tensor(feature)
+def _batch_to_tensor(batch: Any) -> Tensor:
+    batch = _unwrap_batch(batch)
+    if not torch.is_tensor(batch):
+        batch = torch.as_tensor(batch)
+    return batch.float()
 
-    feature = feature.float()
-    if feature.ndim == 3 and feature.shape[0] == 1:
-        feature = feature.squeeze(0)
-    if feature.ndim == 2 and feature.shape[0] == 40 and feature.shape[1] != 40:
-        feature = feature.transpose(0, 1)
-    return feature
+
+def _prepare_ge2e_loader_batch(batch: Any) -> Tensor:
+    tensor = _batch_to_tensor(batch)
+    if tensor.ndim < 3:
+        raise ValueError(
+            "GE2E DataLoader batches must contain grouped speaker data with shape "
+            "(speakers, utterances, ...)."
+        )
+    return tensor
+
+
+def _prepare_gan_loader_batch(batch: Any) -> Tensor:
+    tensor = _batch_to_tensor(batch)
+    if tensor.ndim == 3:
+        tensor = tensor.unsqueeze(1)
+    if tensor.ndim != 4:
+        raise ValueError("GAN DataLoader batches must be 4D tensors with shape (B, 1, H, W).")
+    if tensor.shape[1] != 1:
+        raise ValueError("GAN DataLoader batches must have a single mel channel.")
+    return tensor
+
+
+def _iter_batches(source: DataLoader, steps_per_epoch: int | None = None):
+    if steps_per_epoch is None:
+        yield from source
+        return
+
+    iterator = iter(source)
+    for _ in range(steps_per_epoch):
+        try:
+            batch = next(iterator)
+        except StopIteration:
+            iterator = iter(source)
+            batch = next(iterator)
+        yield batch
+
+
+def _validate_training_inputs(
+    train_dataset: DataLoader,
+    validation_dataset: DataLoader | None,
+    epochs: int,
+    steps_per_epoch: int | None,
+) -> None:
+    if not isinstance(train_dataset, DataLoader):
+        raise TypeError("train_dataset must be a torch.utils.data.DataLoader.")
+    if validation_dataset is not None and not isinstance(validation_dataset, DataLoader):
+        raise TypeError("validation_dataset must be a torch.utils.data.DataLoader.")
+    if epochs <= 0:
+        raise ValueError("epochs must be greater than 0.")
+    if steps_per_epoch is not None and steps_per_epoch <= 0:
+        raise ValueError("steps_per_epoch must be greater than 0 when provided.")
 
 
 def _is_voice_expand_gan(model: nn.Module) -> bool:
@@ -91,21 +123,6 @@ def _is_voice_expand_gan(model: nn.Module) -> bool:
 def _set_module_requires_grad(module: nn.Module, requires_grad: bool) -> None:
     for parameter in module.parameters():
         parameter.requires_grad_(requires_grad)
-
-
-def _materialize_mel_batch(dataset: Dataset, batch_indices: list[int]) -> Tensor:
-    features = [_extract_feature(dataset[index]) for index in batch_indices]
-    normalized_features: list[Tensor] = []
-    for feature in features:
-        if feature.ndim == 2:
-            feature = feature.unsqueeze(0)
-        elif feature.ndim == 3 and feature.shape[0] != 1 and feature.shape[-1] == 40:
-            feature = feature.unsqueeze(0)
-        normalized_features.append(feature)
-    batch = torch.stack(normalized_features, dim=0)
-    if batch.ndim == 4 and batch.shape[1] != 1:
-        raise ValueError("Expected mel batches to have a single channel.")
-    return batch.float()
 
 
 def _prepare_gan_inputs(batch: Tensor) -> tuple[Tensor, Tensor, Tensor]:
@@ -124,122 +141,10 @@ def _prepare_gan_inputs(batch: Tensor) -> tuple[Tensor, Tensor, Tensor]:
     return m_nb, noise, m_gt
 
 
-def _build_linear_batches(
-    dataset_size: int,
-    batch_size: int,
-    rng: random.Random,
-) -> list[list[int]]:
-    indices = list(range(dataset_size))
-    rng.shuffle(indices)
-    return [indices[start : start + batch_size] for start in range(0, dataset_size, batch_size)]
-
-
-def _build_random_batches(
-    dataset_size: int,
-    batch_size: int,
-    steps_per_epoch: int,
-    rng: random.Random,
-) -> list[list[int]]:
-    indices = list(range(dataset_size))
-    if dataset_size == 0:
-        raise ValueError("The dataset is empty.")
-
-    batches: list[list[int]] = []
-    for _ in range(steps_per_epoch):
-        if dataset_size >= batch_size:
-            batch_indices = rng.sample(indices, k=batch_size)
-        else:
-            batch_indices = [rng.choice(indices) for _ in range(batch_size)]
-        batches.append(batch_indices)
-    return batches
-
-
-def _build_speaker_groups(dataset: Dataset) -> dict[str, list[int]]:
-    speaker_to_indices: dict[str, list[int]] = defaultdict(list)
-    for index in range(len(dataset)):
-        sample = dataset[index]
-        speaker_id = _extract_speaker_id(sample)
-        speaker_to_indices[speaker_id].append(index)
-    if not speaker_to_indices:
-        raise ValueError("The dataset is empty or no valid speaker labels were found.")
-    return speaker_to_indices
-
-
-def _sample_utterance_indices(
-    indices: list[int],
-    utterances_per_speaker: int,
-    rng: random.Random,
-) -> list[int]:
-    if len(indices) >= utterances_per_speaker:
-        return rng.sample(indices, k=utterances_per_speaker)
-    return [rng.choice(indices) for _ in range(utterances_per_speaker)]
-
-
-def _build_training_batches(
-    speaker_to_indices: dict[str, list[int]],
-    speakers_per_batch: int,
-    utterances_per_speaker: int,
-    steps_per_epoch: int,
-    rng: random.Random,
-) -> list[list[list[int]]]:
-    speaker_ids = list(speaker_to_indices.keys())
-    if len(speaker_ids) == 0:
-        raise ValueError("No speakers were found in the dataset.")
-
-    batches: list[list[list[int]]] = []
-    for _ in range(steps_per_epoch):
-        if len(speaker_ids) >= speakers_per_batch:
-            selected_speakers = rng.sample(speaker_ids, k=speakers_per_batch)
-        else:
-            selected_speakers = [rng.choice(speaker_ids) for _ in range(speakers_per_batch)]
-
-        batch_indices = [
-            _sample_utterance_indices(speaker_to_indices[speaker_id], utterances_per_speaker, rng)
-            for speaker_id in selected_speakers
-        ]
-        batches.append(batch_indices)
-    return batches
-
-
-def _build_evaluation_batches(
-    speaker_to_indices: dict[str, list[int]],
-    speakers_per_batch: int,
-    utterances_per_speaker: int,
-) -> list[list[list[int]]]:
-    speaker_ids = sorted(speaker_to_indices.keys())
-    if len(speaker_ids) == 0:
-        raise ValueError("No speakers were found in the dataset.")
-
-    batches: list[list[list[int]]] = []
-    for start in range(0, len(speaker_ids), max(1, speakers_per_batch)):
-        selected_speakers = speaker_ids[start : start + max(1, speakers_per_batch)]
-        batch_indices = [
-            _sample_utterance_indices(
-                speaker_to_indices[speaker_id],
-                utterances_per_speaker,
-                random.Random(DEFAULT_SEED),
-            )
-            for speaker_id in selected_speakers
-        ]
-        batches.append(batch_indices)
-    return batches
-
-
-def _materialize_ge2e_batch(dataset: Dataset, batch_indices: list[list[int]]) -> Tensor:
-    speaker_batches: list[Tensor] = []
-    for speaker_indices in batch_indices:
-        utterances = [_extract_feature(dataset[index]) for index in speaker_indices]
-        speaker_batches.append(torch.stack(utterances, dim=0))
-    return torch.stack(speaker_batches, dim=0)
-
-
 def _evaluate_dataset(
     model: nn.Module,
-    dataset: Dataset,
+    dataset: DataLoader,
     loss_fn: nn.Module,
-    *,
-    speakers_per_batch: int,
-    utterances_per_speaker: int,
     device: torch.device,
 ) -> dict[str, float | int]:
     model_was_training = model.training
@@ -247,24 +152,17 @@ def _evaluate_dataset(
     model.eval()
     loss_fn.eval()
 
-    speaker_to_indices = _build_speaker_groups(dataset)
-    batches = _build_evaluation_batches(
-        speaker_to_indices=speaker_to_indices,
-        speakers_per_batch=speakers_per_batch,
-        utterances_per_speaker=utterances_per_speaker,
-    )
-
     total_loss = 0.0
     total_batches = 0
     total_speakers = 0
     total_utterances = 0
 
     with torch.no_grad():
-        progress = tqdm(batches, desc="Evaluating", leave=False)
-        for batch_indices in progress:
-            batch = _materialize_ge2e_batch(dataset, batch_indices).to(device)
-            num_speakers, num_utterances = batch.shape[:2]
-            flattened_batch = batch.reshape(num_speakers * num_utterances, *batch.shape[2:])
+        progress = tqdm(dataset, desc="Evaluating", leave=False)
+        for batch in progress:
+            batch_tensor = _prepare_ge2e_loader_batch(batch).to(device)
+            num_speakers, num_utterances = batch_tensor.shape[:2]
+            flattened_batch = batch_tensor.reshape(num_speakers * num_utterances, *batch_tensor.shape[2:])
             embeddings = model(flattened_batch).reshape(num_speakers, num_utterances, -1)
             loss = loss_fn(embeddings)
 
@@ -291,9 +189,7 @@ def _evaluate_dataset(
 
 def _evaluate_voice_expand_gan(
     model: nn.Module,
-    dataset: Dataset,
-    *,
-    batch_size: int,
+    dataset: DataLoader,
     device: torch.device,
 ) -> dict[str, float | int]:
     if not _is_voice_expand_gan(model):
@@ -302,17 +198,15 @@ def _evaluate_voice_expand_gan(
     model_was_training = model.training
     model.eval()
 
-    total_g_loss = 0.0
-    total_d_loss = 0.0
-    total_batches = 0
-    total_samples = 0
-    batches = _build_linear_batches(len(dataset), max(1, batch_size), random.Random(DEFAULT_SEED))
-
     with torch.no_grad():
-        progress = tqdm(batches, desc="Evaluating GAN", leave=False)
-        for batch_indices in progress:
-            batch = _materialize_mel_batch(dataset, batch_indices).to(device)
-            m_nb, noise, m_gt = _prepare_gan_inputs(batch)
+        total_g_loss = 0.0
+        total_d_loss = 0.0
+        total_batches = 0
+        total_samples = 0
+        progress = tqdm(dataset, desc="Evaluating GAN", leave=False)
+        for batch in progress:
+            batch_tensor = _prepare_gan_loader_batch(batch).to(device)
+            m_nb, noise, m_gt = _prepare_gan_inputs(batch_tensor)
             m_re = model.generate(m_nb, noise)
             d_loss = model.discriminator_loss(m_re, m_nb, m_gt)
             g_loss = model.generator_loss(m_re, m_nb, m_gt)
@@ -322,7 +216,7 @@ def _evaluate_voice_expand_gan(
             total_d_loss += d_loss_value
             total_g_loss += g_loss_value
             total_batches += 1
-            total_samples += batch.shape[0]
+            total_samples += batch_tensor.shape[0]
             progress.set_postfix(g_loss=f"{g_loss_value:.4f}", d_loss=f"{d_loss_value:.4f}")
 
     if model_was_training:
@@ -341,14 +235,13 @@ def _evaluate_voice_expand_gan(
 
 def _train_voice_expand_gan(
     model: nn.Module,
-    train_dataset: Dataset,
+    train_dataset: DataLoader,
     *,
     weights_path: Path | None,
     epochs: int,
-    batch_size: int,
     learning_rate: float,
     weight_decay: float,
-    validation_dataset: Dataset | None,
+    validation_dataset: DataLoader | None,
     device: torch.device,
     log_dir: Path | None,
     seed: int,
@@ -367,14 +260,13 @@ def _train_voice_expand_gan(
     g_optimizer = Adam(generator.parameters(), lr=learning_rate, weight_decay=weight_decay)
     d_optimizer = Adam(discriminator.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
     effective_steps_per_epoch = steps_per_epoch
     if effective_steps_per_epoch is None:
-        effective_steps_per_epoch = max(1, math.ceil(len(train_dataset) / max(1, batch_size)))
+        effective_steps_per_epoch = max(1, len(train_dataset))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     writer_dir = Path(log_dir) if log_dir is not None else TENSORBOARD_DIR / f"gan_train_{timestamp}"
@@ -388,22 +280,15 @@ def _train_voice_expand_gan(
     best_val_loss = math.inf
     best_state: dict[str, Any] | None = None
     global_step = 0
-
     try:
         for epoch in range(epochs):
-            epoch_rng = random.Random(seed + epoch)
-            batches = _build_random_batches(
-                dataset_size=len(train_dataset),
-                batch_size=batch_size,
-                steps_per_epoch=effective_steps_per_epoch,
-                rng=epoch_rng,
-            )
+            batches = _iter_batches(train_dataset, effective_steps_per_epoch)
 
             epoch_g_loss = 0.0
             epoch_d_loss = 0.0
             progress = tqdm(batches, desc=f"GAN Epoch {epoch + 1}/{epochs}", leave=False)
-            for batch_indices in progress:
-                batch = _materialize_mel_batch(train_dataset, batch_indices).to(device)
+            for batch_data in progress:
+                batch = _prepare_gan_loader_batch(batch_data).to(device)
                 m_nb, noise, m_gt = _prepare_gan_inputs(batch)
 
                 # Update discriminator.
@@ -457,7 +342,6 @@ def _train_voice_expand_gan(
                 validation_result = _evaluate_voice_expand_gan(
                     model=model,
                     dataset=validation_dataset,
-                    batch_size=batch_size,
                     device=device,
                 )
                 validation_loss = float(validation_result["average_loss"])
@@ -490,101 +374,42 @@ def _train_voice_expand_gan(
     return model
 
 
-def train(
+def train_model(
     model: nn.Module,
-    train_dataset: Dataset,
+    train_dataset: DataLoader,
     loss_fn: nn.Module | None = None,
     weights_path: Path | None = None,
     epochs: int = DEFAULT_EPOCHS,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    utterances_per_speaker: int = DEFAULT_UTTERANCES_PER_SPEAKER,
     learning_rate: float = DEFAULT_LEARNING_RATE,
     weight_decay: float = DEFAULT_WEIGHT_DECAY,
-    validation_dataset: Dataset | None = None,
+    validation_dataset: DataLoader | None = None,
     device: torch.device | str | None = None,
     log_dir: Path | None = None,
     seed: int = DEFAULT_SEED,
     steps_per_epoch: int | None = None,
     max_grad_norm: float | None = None,
 ) -> nn.Module:
-    """Train a speaker encoder model with GE2E-style batches.
-
-    Args:
-        model: PyTorch model to train.
-        train_dataset: Training dataset inheriting from Dataset.
-        loss_fn: Loss function, defaults to GE2ELoss.
-        weights_path: Optional checkpoint file path. When provided, the final
-            checkpoint is saved there.
-        epochs: Number of training epochs.
-        batch_size: Number of speakers per batch.
-        utterances_per_speaker: Number of utterances per speaker in each batch.
-        learning_rate: Optimizer learning rate.
-        weight_decay: Optimizer weight decay.
-        validation_dataset: Optional validation dataset.
-        device: Device for training, defaults to CUDA when available.
-        log_dir: TensorBoard log directory. Defaults under artifacts/.
-        seed: Random seed for batch sampling.
-        steps_per_epoch: Optional number of batches per epoch.
-        max_grad_norm: Optional gradient clipping threshold.
-
-    Returns:
-        The trained model instance.
-    """
+    """Train a non-GAN model with GE2E-style batches."""
     if loss_fn is None:
         loss_fn = GE2ELoss()
 
-    if not isinstance(train_dataset, Dataset):
-        raise TypeError("train_dataset must inherit from torch.utils.data.Dataset.")
-    if validation_dataset is not None and not isinstance(validation_dataset, Dataset):
-        raise TypeError("validation_dataset must inherit from torch.utils.data.Dataset.")
-    if epochs <= 0:
-        raise ValueError("epochs must be greater than 0.")
-    if batch_size <= 0:
-        raise ValueError("batch_size must be greater than 0.")
-    if utterances_per_speaker <= 0:
-        raise ValueError("utterances_per_speaker must be greater than 0.")
-    if steps_per_epoch is not None and steps_per_epoch <= 0:
-        raise ValueError("steps_per_epoch must be greater than 0 when provided.")
-
-    resolved_device = torch.device(device) if device is not None else torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
+    _validate_training_inputs(
+        train_dataset=train_dataset,
+        validation_dataset=validation_dataset,
+        epochs=epochs,
+        steps_per_epoch=steps_per_epoch,
     )
 
-    if _is_voice_expand_gan(model):
-        return _train_voice_expand_gan(
-            model=model,
-            train_dataset=train_dataset,
-            weights_path=weights_path,
-            epochs=epochs,
-            batch_size=batch_size,
-            learning_rate=learning_rate,
-            weight_decay=weight_decay,
-            validation_dataset=validation_dataset,
-            device=resolved_device,
-            log_dir=log_dir,
-            seed=seed,
-            steps_per_epoch=steps_per_epoch,
-            max_grad_norm=max_grad_norm,
-        )
-
+    resolved_device = _resolve_device(device)
     model = model.to(resolved_device)
     loss_fn = loss_fn.to(resolved_device)
 
     model.train()
     loss_fn.train()
 
-    random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
-    speaker_to_indices = _build_speaker_groups(train_dataset)
-    effective_steps_per_epoch = steps_per_epoch
-    if effective_steps_per_epoch is None:
-        effective_steps_per_epoch = max(
-            1,
-            math.ceil(len(speaker_to_indices) / max(1, batch_size)),
-        )
 
     parameters = list(model.parameters()) + list(loss_fn.parameters())
     optimizer = Adam(parameters, lr=learning_rate, weight_decay=weight_decay)
@@ -601,24 +426,23 @@ def train(
     best_val_loss = math.inf
     best_state = None
     global_step = 0
+    if len(train_dataset) == 0:
+        raise ValueError("train_dataset must not be empty.")
+
+    effective_steps_per_epoch = steps_per_epoch
+    if effective_steps_per_epoch is None:
+        effective_steps_per_epoch = max(1, len(train_dataset))
 
     try:
         for epoch in range(epochs):
             model.train()
             loss_fn.train()
-            epoch_rng = random.Random(seed + epoch)
-            batches = _build_training_batches(
-                speaker_to_indices=speaker_to_indices,
-                speakers_per_batch=batch_size,
-                utterances_per_speaker=utterances_per_speaker,
-                steps_per_epoch=effective_steps_per_epoch,
-                rng=epoch_rng,
-            )
+            batches = _iter_batches(train_dataset, effective_steps_per_epoch)
 
             epoch_loss = 0.0
             progress = tqdm(batches, desc=f"Epoch {epoch + 1}/{epochs}", leave=False)
-            for batch_indices in progress:
-                batch = _materialize_ge2e_batch(train_dataset, batch_indices).to(resolved_device)
+            for batch_data in progress:
+                batch = _prepare_ge2e_loader_batch(batch_data).to(resolved_device)
                 num_speakers, num_utterances = batch.shape[:2]
                 flattened_batch = batch.reshape(num_speakers * num_utterances, *batch.shape[2:])
 
@@ -646,8 +470,6 @@ def train(
                     model=model,
                     dataset=validation_dataset,
                     loss_fn=loss_fn,
-                    speakers_per_batch=batch_size,
-                    utterances_per_speaker=utterances_per_speaker,
                     device=resolved_device,
                 )
                 validation_loss = float(validation_result["average_loss"])
@@ -685,32 +507,88 @@ def train(
     return model
 
 
-def train_model(
+def train_gan_model(
     model: nn.Module,
-    train_dataset: Dataset,
-    loss_fn: nn.Module | None = None,
+    train_dataset: DataLoader,
     weights_path: Path | None = None,
     epochs: int = DEFAULT_EPOCHS,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    utterances_per_speaker: int = DEFAULT_UTTERANCES_PER_SPEAKER,
     learning_rate: float = DEFAULT_LEARNING_RATE,
     weight_decay: float = DEFAULT_WEIGHT_DECAY,
-    validation_dataset: Dataset | None = None,
+    validation_dataset: DataLoader | None = None,
     device: torch.device | str | None = None,
     log_dir: Path | None = None,
     seed: int = DEFAULT_SEED,
     steps_per_epoch: int | None = None,
     max_grad_norm: float | None = None,
 ) -> nn.Module:
-    """Backward-compatible alias for train()."""
-    return train(
+    """Train a VoiceExpandGAN model with alternating generator/discriminator updates."""
+    _validate_training_inputs(
+        train_dataset=train_dataset,
+        validation_dataset=validation_dataset,
+        epochs=epochs,
+        steps_per_epoch=steps_per_epoch,
+    )
+    return _train_voice_expand_gan(
+        model=model,
+        train_dataset=train_dataset,
+        weights_path=weights_path,
+        epochs=epochs,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        validation_dataset=validation_dataset,
+        device=_resolve_device(device),
+        log_dir=log_dir,
+        seed=seed,
+        steps_per_epoch=steps_per_epoch,
+        max_grad_norm=max_grad_norm,
+    )
+
+
+def train(
+    model: nn.Module,
+    train_dataset: DataLoader,
+    loss_fn: nn.Module | None = None,
+    weights_path: Path | None = None,
+    epochs: int = DEFAULT_EPOCHS,
+    learning_rate: float = DEFAULT_LEARNING_RATE,
+    weight_decay: float = DEFAULT_WEIGHT_DECAY,
+    validation_dataset: DataLoader | None = None,
+    device: torch.device | str | None = None,
+    log_dir: Path | None = None,
+    seed: int = DEFAULT_SEED,
+    steps_per_epoch: int | None = None,
+    max_grad_norm: float | None = None,
+) -> nn.Module:
+    """Dispatch to the appropriate training routine based on model type."""
+    _validate_training_inputs(
+        train_dataset=train_dataset,
+        validation_dataset=validation_dataset,
+        epochs=epochs,
+        steps_per_epoch=steps_per_epoch,
+    )
+
+    if _is_voice_expand_gan(model):
+        return train_gan_model(
+            model=model,
+            train_dataset=train_dataset,
+            weights_path=weights_path,
+            epochs=epochs,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            validation_dataset=validation_dataset,
+            device=device,
+            log_dir=log_dir,
+            seed=seed,
+            steps_per_epoch=steps_per_epoch,
+            max_grad_norm=max_grad_norm,
+        )
+
+    return train_model(
         model=model,
         train_dataset=train_dataset,
         loss_fn=loss_fn,
         weights_path=weights_path,
         epochs=epochs,
-        batch_size=batch_size,
-        utterances_per_speaker=utterances_per_speaker,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
         validation_dataset=validation_dataset,
