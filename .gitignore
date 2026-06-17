@@ -9,14 +9,7 @@ __pycache__/
 
 data/
 
-artifacts/*
-!artifacts/.gitkeep
-!artifacts/checkpoints/
-!artifacts/checkpoints/.gitkeep
-!artifacts/logs/
-!artifacts/logs/.gitkeep
-!artifacts/reports/
-!artifacts/reports/.gitkeep
+artifacts/
 
 models/*
 !models/.gitkeep
