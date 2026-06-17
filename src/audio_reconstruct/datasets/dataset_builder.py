@@ -4,7 +4,12 @@ from dataclasses import dataclass
 import random
 from typing import Iterator
 
-from audio_reconstruct.datasets.audio_dataset import AudioReconstructionDataset
+from audio_reconstruct.datasets.audio_dataset import (
+    AudioReconstructionDataset,
+    SpkEncDataset,
+    create_spk_subset,
+    get_all_speakers,
+)
 
 
 DEFAULT_SEED = 42
@@ -42,16 +47,7 @@ def build_dataset(
     train_ratio: float = 0.8,
     val_ratio: float = 0.1,
 ) -> tuple[AudioReconstructionDataset, AudioReconstructionDataset, AudioReconstructionDataset]:
-    """Split a dataset into train/validation/test subsets.
-
-    Args:
-        dataset: Fully prepared dataset to split.
-        train_ratio: Ratio assigned to the train split.
-        val_ratio: Ratio assigned to the validation split.
-
-    Returns:
-        A tuple of (train_dataset, val_dataset, test_dataset).
-    """
+    """Split a dataset into train/validation/test subsets."""
     _validate_ratios(train_ratio, val_ratio)
 
     total_size = len(dataset)
@@ -67,19 +63,49 @@ def build_dataset(
     test_size = total_size - train_size - val_size
 
     if total_size > 0 and test_ratio > 0.0 and test_size == 0:
-        # Keep at least one item for the test split when rounding collapses it.
         if val_size > 0:
             val_size -= 1
         elif train_size > 0:
             train_size -= 1
-        test_size = total_size - train_size - val_size
 
     train_indices = indices[:train_size]
     val_indices = indices[train_size : train_size + val_size]
     test_indices = indices[train_size + val_size :]
 
-    train_dataset = _DatasetSubset(dataset=dataset, indices=train_indices)
-    val_dataset = _DatasetSubset(dataset=dataset, indices=val_indices)
-    test_dataset = _DatasetSubset(dataset=dataset, indices=test_indices)
-    return train_dataset, val_dataset, test_dataset
+    return (
+        _DatasetSubset(dataset=dataset, indices=train_indices),
+        _DatasetSubset(dataset=dataset, indices=val_indices),
+        _DatasetSubset(dataset=dataset, indices=test_indices),
+    )
 
+
+def build_spk_dataset_split(
+    dataset: SpkEncDataset,
+    train_ratio: float = 0.8,
+    val_ratio: float = 0.1,
+    seed: int = DEFAULT_SEED,
+    min_utt_per_spk: int = 2,
+) -> tuple[SpkEncDataset, SpkEncDataset, SpkEncDataset]:
+    """Split a speaker embedding dataset at the speaker level."""
+    _validate_ratios(train_ratio, val_ratio)
+
+    all_valid_spks = get_all_speakers(dataset, min_utt_per_spk=min_utt_per_spk)
+    if not all_valid_spks:
+        raise RuntimeError("No valid speakers for GE2E split.")
+
+    rng = random.Random(seed)
+    rng.shuffle(all_valid_spks)
+
+    total_spk = len(all_valid_spks)
+    train_spk_num = int(total_spk * train_ratio)
+    val_spk_num = int(total_spk * val_ratio)
+
+    train_spks = all_valid_spks[:train_spk_num]
+    val_spks = all_valid_spks[train_spk_num : train_spk_num + val_spk_num]
+    test_spks = all_valid_spks[train_spk_num + val_spk_num :]
+
+    return (
+        create_spk_subset(dataset, train_spks),
+        create_spk_subset(dataset, val_spks),
+        create_spk_subset(dataset, test_spks),
+    )

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
-import json
 import logging
 import os
 from pathlib import Path
@@ -17,8 +17,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DATASET_MODULE_DIR = Path(__file__).resolve().parent
 RAW_DATASETS_DIR = DATASET_MODULE_DIR / "raw"
 PROCESSED_DATASETS_DIR = DATASET_MODULE_DIR / "processed"
-# RAW_LIBRISPEECH_DIR = PROJECT_ROOT / "data" / "raw" / "LibriSpeech"
-# PROCESSED_LIBRISPEECH_DIR = PROJECT_ROOT / "data" / "processed" / "LibriSpeech"
 SUPPORTED_AUDIO_EXTENSIONS = (
     ".flac",
     ".wav",
@@ -48,6 +46,14 @@ class LibriSpeechProcessedItem:
     label: str
     file: str
     text: str
+
+
+@dataclass(slots=True)
+class SpkEncDatasetItem:
+    """Metadata for a single processed speaker embedding sample."""
+
+    speaker_id: str
+    file_path: Path
 
 
 class AudioReconstructionDataset(Dataset):
@@ -80,12 +86,38 @@ def _find_audio_file(directory: Path, stem: str) -> Path | None:
     return None
 
 
-class LibriSpeechRawDataset(AudioReconstructionDataset):
-    """Raw LibriSpeech dataset reader.
+def build_spk_to_items(dataset: "SpkEncDataset") -> dict[str, list[SpkEncDatasetItem]]:
+    speaker_to_items: dict[str, list[SpkEncDatasetItem]] = defaultdict(list)
+    for item in dataset._data_files:
+        speaker_to_items[item.speaker_id].append(item)
+    return dict(speaker_to_items)
 
-    Each item exposes the original utterance metadata so the preprocessing
-    pipeline can derive log-mel features from the source audio.
-    """
+
+def get_data_files(dataset: "SpkEncDataset") -> list[SpkEncDatasetItem]:
+    return list(dataset._data_files)
+
+
+def get_speaker_utterances(dataset: "SpkEncDataset", speaker_id: str) -> list[SpkEncDatasetItem]:
+    speaker_to_items = build_spk_to_items(dataset)
+    return list(speaker_to_items.get(speaker_id, []))
+
+
+def get_all_speakers(dataset: "SpkEncDataset", min_utt_per_spk: int = 2) -> list[str]:
+    speaker_to_items = build_spk_to_items(dataset)
+    return [speaker_id for speaker_id, items in speaker_to_items.items() if len(items) >= min_utt_per_spk]
+
+
+def create_spk_subset(source_ds: "SpkEncDataset", selected_spks: list[str]) -> "SpkEncDataset":
+    selected_speakers = set(selected_spks)
+    new_ds = SpkEncDataset(randomize=source_ds.randomize)
+    for item in source_ds._data_files:
+        if item.speaker_id in selected_speakers:
+            new_ds.add_item(item.speaker_id, item.file_path)
+    return new_ds
+
+
+class LibriSpeechRawDataset(AudioReconstructionDataset):
+    """Raw LibriSpeech dataset reader."""
 
     def __init__(
         self,
@@ -147,11 +179,7 @@ class LibriSpeechRawDataset(AudioReconstructionDataset):
 
 
 class LibriSpeechDataset(AudioReconstructionDataset):
-    """Processed LibriSpeech dataset.
-
-    Items are stored as log-mel feature tensors on disk and indexed by a
-    metadata file for efficient loading.
-    """
+    """Processed LibriSpeech dataset."""
 
     def __init__(
         self,
@@ -159,20 +187,19 @@ class LibriSpeechDataset(AudioReconstructionDataset):
         dataset_sub_name: str | None = None,
     ) -> None:
         super().__init__()
-        if dataset_sub_name is not None:
-            self._dataset_dir = Path(base_dir) / dataset_sub_name
-        else:
-            self._dataset_dir = Path(base_dir)
-
-        self._data_files = []
+        self._dataset_dir = Path(base_dir) / dataset_sub_name if dataset_sub_name is not None else Path(base_dir)
+        self._data_files: list[LibriSpeechProcessedItem] = []
         if self._dataset_dir.exists():
             self._data_files = self._scan_for_tensor_files()
 
     def _scan_for_tensor_files(self) -> list[LibriSpeechProcessedItem]:
         data_files: list[LibriSpeechProcessedItem] = []
-        with (self._dataset_dir / "transcript.txt").open("r", encoding="utf-8") as f:
-            for line in f:
-                label, text = line.strip().split(" ", maxsplit=1)
+        with (self._dataset_dir / "transcript.txt").open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                label, text = line.split(" ", maxsplit=1)
                 data_files.append(
                     LibriSpeechProcessedItem(
                         label=label,
@@ -189,44 +216,39 @@ class LibriSpeechDataset(AudioReconstructionDataset):
         item = self._data_files[idx]
         file = torch.load(item.file, map_location="cpu")
         return {
-            "label": item.label,    # 文件名（无后缀）
-            "file": file,           # 文件内容，torch格式
-            "text": item.text,      # 文件内容对应文本
-            "path": Path(item.file).absolute(),  # 文件路径
+            "label": item.label,
+            "file": file,
+            "text": item.text,
+            "path": Path(item.file).absolute(),
         }
-
-
-@dataclass(slots=True)
-class SpkEncDatasetItem:
-    speaker_id: str
-    file_path: Path
 
 
 class SpkEncDataset(AudioReconstructionDataset):
     """Dataset for speaker embedding training."""
+
     def __init__(
         self,
         processed_dataset_dir: Path | None = None,
         randomize: bool = True,
     ) -> None:
         super().__init__()
-        self._randomize = randomize
-        self._data_files: [SpkEncDatasetItem] = []
+        self.randomize = randomize
+        self._data_files: list[SpkEncDatasetItem] = []
 
         if processed_dataset_dir is not None:
             self.build_from_dir(processed_dataset_dir)
 
-    def build_from_dir(self, processed_dataset_dir: Path):
-        for speaker_dir in processed_dataset_dir.iterdir():
+    def build_from_dir(self, processed_dataset_dir: Path) -> None:
+        for speaker_dir in sorted(processed_dataset_dir.iterdir()):
             if not speaker_dir.is_dir():
                 continue
             speaker_id = speaker_dir.name
-            for file_path in speaker_dir.iterdir():
+            for file_path in sorted(speaker_dir.iterdir()):
                 if file_path.suffix != ".pt":
                     continue
-                self._data_files.append(SpkEncDatasetItem(speaker_id=speaker_id, file_path=file_path))
+                self.add_item(speaker_id, file_path)
 
-    def add_item(self, speaker_id: str, file_path: Path):
+    def add_item(self, speaker_id: str, file_path: Path) -> None:
         self._data_files.append(SpkEncDatasetItem(speaker_id=speaker_id, file_path=file_path))
 
     def __len__(self) -> int:
@@ -238,4 +260,14 @@ class SpkEncDataset(AudioReconstructionDataset):
         return {
             "speaker_id": item.speaker_id,
             "file": file,
+            "file_path": item.file_path,
         }
+
+    def get_all_speakers(self, min_utt_per_spk: int = 2) -> list[str]:
+        return get_all_speakers(self, min_utt_per_spk=min_utt_per_spk)
+
+    def get_speaker_utterances(self, speaker_id: str) -> list[SpkEncDatasetItem]:
+        return get_speaker_utterances(self, speaker_id)
+
+    def get_data_files(self) -> list[SpkEncDatasetItem]:
+        return get_data_files(self)

@@ -112,6 +112,7 @@ def run_spkenc_preprocessing_pipeline(
         for segment_index, segment in enumerate(segments):
             mel_feature = waveform_to_log_mel(segment, sample_rate=TARGET_SAMPLE_RATE)
             tensor_path = save_dir / speaker_id / f"{label}_seg{segment_index:04d}.pt"
+            ensure_directory(tensor_path.parent)
             torch.save(mel_feature.to(torch.float32), tensor_path)
 
             spkenc_dataset.add_item(speaker_id=speaker_id, file_path=tensor_path)

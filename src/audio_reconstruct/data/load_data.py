@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from pathlib import Path
 
 from audio_reconstruct.datasets.audio_dataset import (
@@ -29,7 +28,7 @@ def load_raw_data(
         raise ValueError(f"Unsupported dataset name: {dataset_name}")
 
     base_path = Path(base_dir)
-    dataset_root = base_path / dataset_name / dataset_sub_name
+    dataset_root = base_path
     if not dataset_root.exists():
         raise FileNotFoundError(f"Raw dataset directory does not exist: {dataset_root}")
 

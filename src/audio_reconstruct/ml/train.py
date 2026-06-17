@@ -40,7 +40,7 @@ def _is_data_loader(source: Any) -> bool:
 
 def _unwrap_batch(batch: Any) -> Any:
     if isinstance(batch, dict):
-        for key in ("feature", "features", "input", "inputs", "mel", "mels", "audio"):
+        for key in ("file", "feature", "features", "input", "inputs", "audio", "mel", "mels"):
             value = batch.get(key)
             if value is not None:
                 return value
@@ -96,15 +96,15 @@ def _iter_batches(source: DataLoader, steps_per_epoch: int | None = None):
 
 
 def _validate_training_inputs(
-    train_dataset: DataLoader,
-    validation_dataset: DataLoader | None,
+    train_dataloader: DataLoader,
+    val_dataloader: DataLoader | None,
     epochs: int,
     steps_per_epoch: int | None,
 ) -> None:
-    if not isinstance(train_dataset, DataLoader):
-        raise TypeError("train_dataset must be a torch.utils.data.DataLoader.")
-    if validation_dataset is not None and not isinstance(validation_dataset, DataLoader):
-        raise TypeError("validation_dataset must be a torch.utils.data.DataLoader.")
+    if not isinstance(train_dataloader, DataLoader):
+        raise TypeError("train_dataloader must be a torch.utils.data.DataLoader.")
+    if val_dataloader is not None and not isinstance(val_dataloader, DataLoader):
+        raise TypeError("val_dataloader must be a torch.utils.data.DataLoader.")
     if epochs <= 0:
         raise ValueError("epochs must be greater than 0.")
     if steps_per_epoch is not None and steps_per_epoch <= 0:
@@ -235,13 +235,13 @@ def _evaluate_voice_expand_gan(
 
 def _train_voice_expand_gan(
     model: nn.Module,
-    train_dataset: DataLoader,
+    train_dataloader: DataLoader,
     *,
     weights_path: Path | None,
     epochs: int,
     learning_rate: float,
     weight_decay: float,
-    validation_dataset: DataLoader | None,
+    val_dataloader: DataLoader | None,
     device: torch.device,
     log_dir: Path | None,
     seed: int,
@@ -250,8 +250,8 @@ def _train_voice_expand_gan(
 ) -> nn.Module:
     if not _is_voice_expand_gan(model):
         raise TypeError("GAN training requires a VoiceExpandGAN-compatible model.")
-    if len(train_dataset) == 0:
-        raise ValueError("train_dataset must not be empty.")
+    if len(train_dataloader) == 0:
+        raise ValueError("train_dataloader must not be empty.")
 
     model = model.to(device)
     model.train()
@@ -264,9 +264,7 @@ def _train_voice_expand_gan(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    effective_steps_per_epoch = steps_per_epoch
-    if effective_steps_per_epoch is None:
-        effective_steps_per_epoch = max(1, len(train_dataset))
+    effective_steps_per_epoch = steps_per_epoch if steps_per_epoch is not None else max(1, len(train_dataloader))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     writer_dir = Path(log_dir) if log_dir is not None else TENSORBOARD_DIR / f"gan_train_{timestamp}"
@@ -280,18 +278,19 @@ def _train_voice_expand_gan(
     best_val_loss = math.inf
     best_state: dict[str, Any] | None = None
     global_step = 0
+
     try:
         for epoch in range(epochs):
-            batches = _iter_batches(train_dataset, effective_steps_per_epoch)
-
+            batches = _iter_batches(train_dataloader, effective_steps_per_epoch)
             epoch_g_loss = 0.0
             epoch_d_loss = 0.0
+            epoch_steps = 0
+
             progress = tqdm(batches, desc=f"GAN Epoch {epoch + 1}/{epochs}", leave=False)
             for batch_data in progress:
                 batch = _prepare_gan_loader_batch(batch_data).to(device)
                 m_nb, noise, m_gt = _prepare_gan_inputs(batch)
 
-                # Update discriminator.
                 _set_module_requires_grad(generator, False)
                 _set_module_requires_grad(discriminator, True)
                 d_optimizer.zero_grad(set_to_none=True)
@@ -303,7 +302,6 @@ def _train_voice_expand_gan(
                     torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_grad_norm)
                 d_optimizer.step()
 
-                # Update generator.
                 _set_module_requires_grad(discriminator, False)
                 _set_module_requires_grad(generator, True)
                 g_optimizer.zero_grad(set_to_none=True)
@@ -319,13 +317,14 @@ def _train_voice_expand_gan(
                 g_loss_value = float(g_loss.detach().cpu().item())
                 epoch_d_loss += d_loss_value
                 epoch_g_loss += g_loss_value
+                epoch_steps += 1
                 global_step += 1
                 writer.add_scalar("gan/train/discriminator_loss", d_loss_value, global_step)
                 writer.add_scalar("gan/train/generator_loss", g_loss_value, global_step)
                 progress.set_postfix(g_loss=f"{g_loss_value:.4f}", d_loss=f"{d_loss_value:.4f}")
 
-            average_g_loss = epoch_g_loss / max(1, len(batches))
-            average_d_loss = epoch_d_loss / max(1, len(batches))
+            average_g_loss = epoch_g_loss / max(1, epoch_steps)
+            average_d_loss = epoch_d_loss / max(1, epoch_steps)
             writer.add_scalar("gan/train/epoch_generator_loss", average_g_loss, epoch + 1)
             writer.add_scalar("gan/train/epoch_discriminator_loss", average_d_loss, epoch + 1)
 
@@ -338,12 +337,8 @@ def _train_voice_expand_gan(
                 "best_val_loss": average_g_loss + average_d_loss,
             }
 
-            if validation_dataset is not None:
-                validation_result = _evaluate_voice_expand_gan(
-                    model=model,
-                    dataset=validation_dataset,
-                    device=device,
-                )
+            if val_dataloader is not None:
+                validation_result = _evaluate_voice_expand_gan(model=model, dataset=val_dataloader, device=device)
                 validation_loss = float(validation_result["average_loss"])
                 writer.add_scalar("gan/val/generator_loss", float(validation_result["average_generator_loss"]), epoch + 1)
                 writer.add_scalar("gan/val/discriminator_loss", float(validation_result["average_discriminator_loss"]), epoch + 1)
@@ -376,13 +371,13 @@ def _train_voice_expand_gan(
 
 def train_model(
     model: nn.Module,
-    train_dataset: DataLoader,
+    train_dataloader: DataLoader,
     loss_fn: nn.Module | None = None,
     weights_path: Path | None = None,
     epochs: int = DEFAULT_EPOCHS,
     learning_rate: float = DEFAULT_LEARNING_RATE,
     weight_decay: float = DEFAULT_WEIGHT_DECAY,
-    validation_dataset: DataLoader | None = None,
+    val_dataloader: DataLoader | None = None,
     device: torch.device | str | None = None,
     log_dir: Path | None = None,
     seed: int = DEFAULT_SEED,
@@ -394,8 +389,8 @@ def train_model(
         loss_fn = GE2ELoss()
 
     _validate_training_inputs(
-        train_dataset=train_dataset,
-        validation_dataset=validation_dataset,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
         epochs=epochs,
         steps_per_epoch=steps_per_epoch,
     )
@@ -403,7 +398,6 @@ def train_model(
     resolved_device = _resolve_device(device)
     model = model.to(resolved_device)
     loss_fn = loss_fn.to(resolved_device)
-
     model.train()
     loss_fn.train()
 
@@ -426,20 +420,21 @@ def train_model(
     best_val_loss = math.inf
     best_state = None
     global_step = 0
-    if len(train_dataset) == 0:
-        raise ValueError("train_dataset must not be empty.")
+    if len(train_dataloader) == 0:
+        raise ValueError("train_dataloader must not be empty.")
+    if val_dataloader is not None and len(val_dataloader) == 0:
+        raise ValueError("val_dataloader must not be empty if provided.")
 
-    effective_steps_per_epoch = steps_per_epoch
-    if effective_steps_per_epoch is None:
-        effective_steps_per_epoch = max(1, len(train_dataset))
+    effective_steps_per_epoch = steps_per_epoch if steps_per_epoch is not None else max(1, len(train_dataloader))
 
     try:
         for epoch in range(epochs):
             model.train()
             loss_fn.train()
-            batches = _iter_batches(train_dataset, effective_steps_per_epoch)
+            batches = _iter_batches(train_dataloader, effective_steps_per_epoch)
 
             epoch_loss = 0.0
+            epoch_steps = 0
             progress = tqdm(batches, desc=f"Epoch {epoch + 1}/{epochs}", leave=False)
             for batch_data in progress:
                 batch = _prepare_ge2e_loader_batch(batch_data).to(resolved_device)
@@ -458,17 +453,18 @@ def train_model(
 
                 loss_value = float(loss.detach().cpu().item())
                 epoch_loss += loss_value
+                epoch_steps += 1
                 global_step += 1
                 writer.add_scalar("train/batch_loss", loss_value, global_step)
                 progress.set_postfix(loss=f"{loss_value:.4f}")
 
-            average_train_loss = epoch_loss / max(1, len(batches))
+            average_train_loss = epoch_loss / max(1, epoch_steps)
             writer.add_scalar("train/epoch_loss", average_train_loss, epoch + 1)
 
-            if validation_dataset is not None:
+            if val_dataloader is not None:
                 validation_result = _evaluate_dataset(
                     model=model,
-                    dataset=validation_dataset,
+                    dataset=val_dataloader,
                     loss_fn=loss_fn,
                     device=resolved_device,
                 )
@@ -509,12 +505,12 @@ def train_model(
 
 def train_gan_model(
     model: nn.Module,
-    train_dataset: DataLoader,
+    train_dataloader: DataLoader,
     weights_path: Path | None = None,
     epochs: int = DEFAULT_EPOCHS,
     learning_rate: float = DEFAULT_LEARNING_RATE,
     weight_decay: float = DEFAULT_WEIGHT_DECAY,
-    validation_dataset: DataLoader | None = None,
+    val_dataloader: DataLoader | None = None,
     device: torch.device | str | None = None,
     log_dir: Path | None = None,
     seed: int = DEFAULT_SEED,
@@ -523,19 +519,19 @@ def train_gan_model(
 ) -> nn.Module:
     """Train a VoiceExpandGAN model with alternating generator/discriminator updates."""
     _validate_training_inputs(
-        train_dataset=train_dataset,
-        validation_dataset=validation_dataset,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
         epochs=epochs,
         steps_per_epoch=steps_per_epoch,
     )
     return _train_voice_expand_gan(
         model=model,
-        train_dataset=train_dataset,
+        train_dataloader=train_dataloader,
         weights_path=weights_path,
         epochs=epochs,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
-        validation_dataset=validation_dataset,
+        val_dataloader=val_dataloader,
         device=_resolve_device(device),
         log_dir=log_dir,
         seed=seed,
@@ -546,13 +542,13 @@ def train_gan_model(
 
 def train(
     model: nn.Module,
-    train_dataset: DataLoader,
+    train_dataloader: DataLoader,
+    val_dataloader: DataLoader | None = None,
     loss_fn: nn.Module | None = None,
     weights_path: Path | None = None,
     epochs: int = DEFAULT_EPOCHS,
     learning_rate: float = DEFAULT_LEARNING_RATE,
     weight_decay: float = DEFAULT_WEIGHT_DECAY,
-    validation_dataset: DataLoader | None = None,
     device: torch.device | str | None = None,
     log_dir: Path | None = None,
     seed: int = DEFAULT_SEED,
@@ -561,8 +557,8 @@ def train(
 ) -> nn.Module:
     """Dispatch to the appropriate training routine based on model type."""
     _validate_training_inputs(
-        train_dataset=train_dataset,
-        validation_dataset=validation_dataset,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
         epochs=epochs,
         steps_per_epoch=steps_per_epoch,
     )
@@ -570,12 +566,12 @@ def train(
     if _is_voice_expand_gan(model):
         return train_gan_model(
             model=model,
-            train_dataset=train_dataset,
+            train_dataloader=train_dataloader,
             weights_path=weights_path,
             epochs=epochs,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
-            validation_dataset=validation_dataset,
+            val_dataloader=val_dataloader,
             device=device,
             log_dir=log_dir,
             seed=seed,
@@ -585,13 +581,13 @@ def train(
 
     return train_model(
         model=model,
-        train_dataset=train_dataset,
+        train_dataloader=train_dataloader,
         loss_fn=loss_fn,
         weights_path=weights_path,
         epochs=epochs,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
-        validation_dataset=validation_dataset,
+        val_dataloader=val_dataloader,
         device=device,
         log_dir=log_dir,
         seed=seed,
