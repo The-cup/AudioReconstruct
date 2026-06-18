@@ -256,7 +256,7 @@ class SpkEncDataset(AudioReconstructionDataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         item = self._data_files[idx]
-        file = torch.load(item.file_path, map_location="cpu")
+        file = torch.load(item.file_path, map_location="cpu", weights_only=True)
         return {
             "speaker_id": item.speaker_id,
             "file": file,

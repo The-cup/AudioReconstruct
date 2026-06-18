@@ -11,8 +11,14 @@ from torch.utils.data import DataLoader
 from audio_reconstruct.data.load_data import load_raw_data
 from audio_reconstruct.data.preprocess.pipeline import run_spkenc_preprocessing_pipeline
 from audio_reconstruct.datasets.dataset_builder import build_spk_dataset_split
+from audio_reconstruct.ml.test import test
 from audio_reconstruct.ml.train import train
-from audio_reconstruct.models.custom.ge2e_sampler import GE2ESampler, ge2e_collate
+from audio_reconstruct.models.custom.ge2e_sampler import (
+    GE2ETestBatchSampler,
+    GE2ETrainBatchSampler,
+    GE2EValidationBatchSampler,
+    ge2e_collate,
+)
 from audio_reconstruct.models.registry import get_loss_function, get_model
 
 
@@ -26,9 +32,11 @@ WEIGHTS_DIR = ARTIFACTS_BASE_DIR / "checkpoints"
 
 LOGGER = logging.getLogger(__name__)
 
-EPOCHS = 10
-NUM_SPEAKERS_PER_BATCH = 2
+EPOCHS = 100
+NUM_SPEAKERS_PER_BATCH = 4
 UTTERANCES_PER_SPEAKER = 10
+TRAIN_CHUNKS_PER_SPEAKER_PER_EPOCH = 2
+VALIDATE_EVERY_N_EPOCHS = 50
 NUM_WORKERS = 1
 LEARNING_RATE = 1e-3
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -59,25 +67,26 @@ def _get_dataloader(train_dataset, val_dataset, test_dataset):
         num_utterances_per_speaker=UTTERANCES_PER_SPEAKER,
     )
 
-    train_sampler = GE2ESampler(
+    train_sampler = GE2ETrainBatchSampler(
         dataset=train_dataset,
         num_speakers_per_batch=NUM_SPEAKERS_PER_BATCH,
         num_utterances_per_speaker=UTTERANCES_PER_SPEAKER,
-        shuffle=True,
+        chunks_per_speaker_per_epoch=TRAIN_CHUNKS_PER_SPEAKER_PER_EPOCH,
+        shuffle_speakers=True,
         seed=RANDOM_SEED,
     )
-    val_sampler = GE2ESampler(
+    val_sampler = GE2EValidationBatchSampler(
         dataset=val_dataset,
         num_speakers_per_batch=NUM_SPEAKERS_PER_BATCH,
         num_utterances_per_speaker=UTTERANCES_PER_SPEAKER,
-        shuffle=False,
+        shuffle_speakers=False,
         seed=RANDOM_SEED,
     )
-    test_sampler = GE2ESampler(
+    test_sampler = GE2ETestBatchSampler(
         dataset=test_dataset,
         num_speakers_per_batch=NUM_SPEAKERS_PER_BATCH,
         num_utterances_per_speaker=UTTERANCES_PER_SPEAKER,
-        shuffle=False,
+        shuffle_speakers=False,
         seed=RANDOM_SEED,
     )
 
@@ -112,6 +121,14 @@ def _get_weights_path():
     return WEIGHTS_DIR / f"spkenc_{now_str}.pth"
 
 
+def _get_log_dir():
+    now = datetime.now()
+    now_str = now.strftime("%y-%m-%d-%H-%M-%S")
+    log_dir = LOG_DIR / f"spkenc_{now_str}"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
 def train_and_evaluate():
     LOGGER.info("Loading the dataset...")
     dataset = _get_dataset()
@@ -139,19 +156,28 @@ def train_and_evaluate():
     model = _get_model()
 
     weight_save_path = _get_weights_path()
+    log_dir = _get_log_dir()
 
-    train(
+    model = train(
         model=model,
         train_dataloader=all_dataloader["train"],
         val_dataloader=all_dataloader["validation"],
         epochs=EPOCHS,
         device=DEVICE,
-        log_dir=LOG_DIR,
+        log_dir=log_dir,
         learning_rate=LEARNING_RATE,
         loss_fn=loss_fn,
         weights_path=weight_save_path,
+        validate_every_n_epochs=VALIDATE_EVERY_N_EPOCHS,
         steps_per_epoch=None,
         max_grad_norm=1.0,
+    )
+
+    test(
+        model=model,
+        test_dataloader=all_dataloader["test"],
+        loss_fn=loss_fn,
+        device=DEVICE,
     )
 
 
