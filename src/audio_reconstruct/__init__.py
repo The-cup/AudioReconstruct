@@ -1,2 +1,0 @@
-"""Audio reconstruction package."""
-
