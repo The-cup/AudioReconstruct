@@ -241,27 +241,31 @@ class GanDataset(AudioReconstructionDataset):
     """Dataset for GAN training."""
     def __init__(
         self,
+        embedded_vector_dir: Path | None = None,
         processed_dataset_dir: Path | None = None,
         low_freq_dataset_dir: Path | None = None,
         randomize: bool = True,
     ) -> None:
         super().__init__()
         self.randomize = randomize
+        self.embedded_vector_dir = embedded_vector_dir
         self.processed_dataset_dir = processed_dataset_dir
         self.low_freq_dataset_dir = low_freq_dataset_dir
         self._data_files: list[GanDatasetItem] = []
         if processed_dataset_dir is not None:
-            self.build_from_dir(processed_dataset_dir, low_freq_dataset_dir=low_freq_dataset_dir)
+            self.build_from_dir(processed_dataset_dir, low_freq_dataset_dir=low_freq_dataset_dir, embedded_vector_dir=embedded_vector_dir)
 
     def build_from_dir(
         self,
         processed_dataset_dir: Path,
-        low_freq_dataset_dir: Path | None = None,
+        low_freq_dataset_dir: Path,
+        embedded_vector_dir: Path,
     ) -> None:
         self._data_files = []
 
         processed_dataset_dir = Path(processed_dataset_dir)
-        low_freq_dataset_dir = Path(low_freq_dataset_dir) if low_freq_dataset_dir is not None else None
+        low_freq_dataset_dir = Path(low_freq_dataset_dir)
+        embedded_vector_dir = Path(embedded_vector_dir)
 
         if not processed_dataset_dir.exists():
             LOGGER.warning("Processed GAN dataset directory does not exist: %s", processed_dataset_dir)
@@ -273,7 +277,8 @@ class GanDataset(AudioReconstructionDataset):
         speaker_dirs = [speaker_dir for speaker_dir in sorted(processed_dataset_dir.iterdir()) if speaker_dir.is_dir()]
         for speaker_dir in speaker_dirs:
             speaker_id = speaker_dir.name
-            embedded_path = speaker_dir / "embedded_vector.pt"
+            # embedded_path = speaker_dir / "embedded_vector.pt"
+            embedded_path = embedded_vector_dir / speaker_id / "embedded_vector.pt"
             if not embedded_path.exists():
                 LOGGER.warning("Missing embedded vector for speaker %s: %s", speaker_id, embedded_path)
                 continue

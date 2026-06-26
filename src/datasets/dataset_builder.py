@@ -4,12 +4,7 @@ from dataclasses import dataclass
 import random
 from typing import Iterator
 
-from datasets import (
-    AudioReconstructionDataset,
-    SpkEncDataset,
-    create_spk_subset,
-    get_all_speakers,
-)
+from .audio_dataset import AudioReconstructionDataset, GanDataset, SpkEncDataset, create_spk_subset, get_all_speakers
 
 
 DEFAULT_SEED = 42
@@ -108,4 +103,70 @@ def build_spk_dataset_split(
         create_spk_subset(dataset, train_spks),
         create_spk_subset(dataset, val_spks),
         create_spk_subset(dataset, test_spks),
+    )
+
+
+def _get_gan_speakers(dataset: GanDataset) -> list[str]:
+    speaker_ids = sorted({item.speaker_id for item in dataset._data_files})
+    return speaker_ids
+
+
+def _create_gan_subset(source_ds: GanDataset, selected_spks: list[str]) -> GanDataset:
+    selected_speakers = set(selected_spks)
+    new_ds = GanDataset(
+        embedded_vector_dir=None,
+        processed_dataset_dir=None,
+        low_freq_dataset_dir=None,
+        randomize=source_ds.randomize,
+    )
+    new_ds.processed_dataset_dir = source_ds.processed_dataset_dir
+    new_ds.low_freq_dataset_dir = source_ds.low_freq_dataset_dir
+    new_ds._data_files = [item for item in source_ds._data_files if item.speaker_id in selected_speakers]
+    return new_ds
+
+
+def build_gan_dataset_split(
+    dataset: GanDataset,
+    train_ratio: float = 0.8,
+    val_ratio: float = 0.1,
+    seed: int = DEFAULT_SEED,
+) -> tuple[GanDataset, GanDataset, GanDataset]:
+    """Split a GAN dataset at the speaker level."""
+    _validate_ratios(train_ratio, val_ratio)
+
+    all_speakers = _get_gan_speakers(dataset)
+    if not all_speakers:
+        raise RuntimeError("No valid speakers for GAN split.")
+
+    rng = random.Random(seed)
+    rng.shuffle(all_speakers)
+
+    total_spk = len(all_speakers)
+    train_spk_num = int(total_spk * train_ratio)
+    val_spk_num = int(total_spk * val_ratio)
+    if total_spk > 0:
+        train_spk_num = max(1, train_spk_num)
+
+    if total_spk >= 3:
+        val_spk_num = max(1, val_spk_num)
+        if train_spk_num + val_spk_num >= total_spk:
+            overflow = train_spk_num + val_spk_num - (total_spk - 1)
+            if overflow > 0:
+                reducible_train = min(overflow, max(0, train_spk_num - 1))
+                train_spk_num -= reducible_train
+                overflow -= reducible_train
+            if overflow > 0:
+                val_spk_num -= min(overflow, max(0, val_spk_num - 1))
+        test_spk_num = total_spk - train_spk_num - val_spk_num
+    else:
+        test_spk_num = total_spk - train_spk_num - val_spk_num
+
+    train_spks = all_speakers[:train_spk_num]
+    val_spks = all_speakers[train_spk_num : train_spk_num + val_spk_num]
+    test_spks = all_speakers[train_spk_num + val_spk_num :]
+
+    return (
+        _create_gan_subset(dataset, train_spks),
+        _create_gan_subset(dataset, val_spks),
+        _create_gan_subset(dataset, test_spks),
     )

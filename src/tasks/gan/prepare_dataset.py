@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from config.paths import DATA_DIR, SELECTED_EMBEDDED_DIR
+from config.paths import DATA_DIR, SELECTED_EMBEDDED_DIR, RAW_DATA_DIR, PROCESSED_DATA_DIR
 
 if __package__ in {None, ""}:
     import sys
@@ -27,9 +27,9 @@ from models.registry import get_model
 LOGGER = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_DATA_DIR = DATA_DIR
+DEFAULT_DATA_DIR = PROCESSED_DATA_DIR
 DEFAULT_SELECTED_EMBEDDED_DIR = SELECTED_EMBEDDED_DIR
-DEFAULT_STATE_DICT_PATH = PROJECT_ROOT / "artifacts" / "checkpoints" / "spkenc.pth"
+DEFAULT_STATE_DICT_PATH = PROJECT_ROOT / "artifacts" / "checkpoints" / "spkenc_26-06-18-18-08-07.pth"
 DEFAULT_MIN_UTT_PER_SPK = 20
 DEFAULT_EMBED_EXTRACT_UTT_PER_SPK = 20
 DEFAULT_EMBEDDING_FILENAME = "embedded_vector.pt"
@@ -113,7 +113,7 @@ def _save_tensor(tensor: Tensor, file_path: Path) -> None:
 
 
 def _load_model_state_dict(state_dict_path: Path, device: torch.device) -> dict[str, Tensor]:
-    checkpoint = torch.load(state_dict_path, map_location=device)
+    checkpoint = torch.load(state_dict_path, map_location=device, weights_only=True)
     if isinstance(checkpoint, dict):
         if "model_state_dict" in checkpoint:
             state_dict = checkpoint["model_state_dict"]
@@ -403,6 +403,10 @@ def prepare_low_freq_sample(
         ]
         for source_path in speaker_files:
             target_path = target_speaker_dir / f"{source_path.stem}_low.pt"
+            if target_path.exists():
+                skipped_count += 1
+                continue
+
             try:
                 mel_tensor = _load_tensor(source_path)
                 if mel_tensor is None:
