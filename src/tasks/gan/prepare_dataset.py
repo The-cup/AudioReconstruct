@@ -27,6 +27,10 @@ from models.registry import get_model
 LOGGER = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_DATASET_NAME = "LibriSpeech"
+DEFAULT_DATASET_SUB_NAME = "train-clean-100"
+DEFAULT_RAW_DATA_DIR = RAW_DATA_DIR
+DEFAULT_PROCESSED_DATA_DIR = PROCESSED_DATA_DIR
 DEFAULT_DATA_DIR = PROCESSED_DATA_DIR
 DEFAULT_SELECTED_EMBEDDED_DIR = SELECTED_EMBEDDED_DIR
 DEFAULT_STATE_DICT_PATH = PROJECT_ROOT / "artifacts" / "checkpoints" / "spkenc_26-06-18-18-08-07.pth"
@@ -193,6 +197,26 @@ def _extract_embeddings_for_speaker(
         embeddings.extend(batch_embeddings.detach().cpu())
 
     return embeddings
+
+
+def preprocess_dataset(
+        dataset_name="LibriSpeech",
+        dataset_sub_name="train-clean-100",
+        raw_data_dir=RAW_DATA_DIR,
+        save_dir=PROCESSED_DATA_DIR,
+        load_data=False
+):
+    from tasks.preprocess_dataset import get_dataset, preprocess_dataset
+    dataset = get_dataset(
+        dataset_name=dataset_name,
+        dataset_sub_name=dataset_sub_name,
+        base_dir=raw_data_dir,
+    )
+    return preprocess_dataset(
+        dataset=dataset,
+        save_dir=save_dir,
+        load_data=load_data
+    )
 
 
 def select_embedded_samples(
@@ -443,6 +467,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage embedded speaker sample preparation.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    preprocess_parser = subparsers.add_parser("preprocess", help="Preprocess dataset.")
+    preprocess_parser.add_argument("--dataset_name", type=str, default=DEFAULT_DATASET_NAME)
+    preprocess_parser.add_argument("--dataset_sub_name", type=str, default=DEFAULT_DATASET_SUB_NAME)
+    preprocess_parser.add_argument("--raw_data_dir", type=Path, default=DEFAULT_RAW_DATA_DIR)
+    preprocess_parser.add_argument("--save_dir", type=Path, default=DEFAULT_PROCESSED_DATA_DIR)
+    preprocess_parser.add_argument("--load_data", type=bool, default=False)
+
     select_parser = subparsers.add_parser("select", help="Select embedded samples.")
     select_parser.add_argument("--data_dir", type=Path, default=DEFAULT_DATA_DIR)
     select_parser.add_argument("--selected_embedded_dir", type=Path, default=DEFAULT_SELECTED_EMBEDDED_DIR)
@@ -467,6 +498,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     low_freq_parser.add_argument("--low_freq_data_dir", type=Path, default=PROJECT_ROOT / "data" / "low_freq")
     low_freq_parser.add_argument("--cutoff_hz", type=float, default=DEFAULT_LOW_FREQ_CUTOFF_HZ)
     low_freq_parser.add_argument("--sample_rate", type=int, default=DEFAULT_SAMPLE_RATE)
+
+    all_parser = subparsers.add_parser("all", help="Run preprocess, select, extract, and low-frequency preparation.")
+    all_parser.add_argument("--dataset_name", type=str, default=DEFAULT_DATASET_NAME)
+    all_parser.add_argument("--dataset_sub_name", type=str, default=DEFAULT_DATASET_SUB_NAME)
+    all_parser.add_argument("--raw_data_dir", type=Path, default=DEFAULT_RAW_DATA_DIR)
+    all_parser.add_argument("--save_dir", type=Path, default=DEFAULT_PROCESSED_DATA_DIR)
+    all_parser.add_argument("--load_data", type=bool, default=False)
+    all_parser.add_argument("--data_dir", type=Path, default=DEFAULT_DATA_DIR)
+    all_parser.add_argument("--selected_embedded_dir", type=Path, default=DEFAULT_SELECTED_EMBEDDED_DIR)
+    all_parser.add_argument("--min_utt_per_spk", type=int, default=DEFAULT_MIN_UTT_PER_SPK)
+    all_parser.add_argument("--embed_extract_utt_per_spk", type=int, default=DEFAULT_EMBED_EXTRACT_UTT_PER_SPK)
+    all_parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    all_parser.add_argument("--state_dict_path", type=Path, default=DEFAULT_STATE_DICT_PATH)
+    all_parser.add_argument("--output_filename", type=str, default=DEFAULT_EMBEDDING_FILENAME)
+    all_parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE)
+    all_parser.add_argument("--device", type=str, default=None)
+    all_parser.add_argument("--low_freq_data_dir", type=Path, default=PROJECT_ROOT / "data" / "low_freq")
+    all_parser.add_argument("--cutoff_hz", type=float, default=DEFAULT_LOW_FREQ_CUTOFF_HZ)
+    all_parser.add_argument("--sample_rate", type=int, default=DEFAULT_SAMPLE_RATE)
 
     return parser
 
@@ -499,6 +549,38 @@ def main() -> None:
             output_filename=args.output_filename,
         )
     elif args.command == "prepare_low_freq":
+        prepare_low_freq_sample(
+            data_dir=args.data_dir,
+            low_freq_data_dir=args.low_freq_data_dir,
+            cutoff_hz=args.cutoff_hz,
+            sample_rate=args.sample_rate,
+        )
+    elif args.command == "preprocess":
+        preprocess_dataset(
+            dataset_name=args.dataset_name,
+            dataset_sub_name=args.dataset_sub_name,
+            save_dir=args.save_dir,
+        )
+    elif args.command == "all":
+        preprocess_dataset(
+            dataset_name=args.dataset_name,
+            dataset_sub_name=args.dataset_sub_name,
+            save_dir=args.save_dir,
+        )
+        select_embedded_samples(
+            data_dir=args.data_dir,
+            selected_embedded_dir=args.selected_embedded_dir,
+            min_utt_per_spk=args.min_utt_per_spk,
+            embed_extract_utt_per_spk=args.embed_extract_utt_per_spk,
+            seed=args.seed,
+        )
+        extract_embedded(
+            selected_embedded_dir=args.selected_embedded_dir,
+            state_dict_path=args.state_dict_path,
+            output_filename=args.output_filename,
+            batch_size=args.batch_size,
+            device=args.device,
+        )
         prepare_low_freq_sample(
             data_dir=args.data_dir,
             low_freq_data_dir=args.low_freq_data_dir,
