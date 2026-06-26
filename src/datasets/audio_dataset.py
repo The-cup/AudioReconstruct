@@ -3,20 +3,15 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 import logging
-import os
 from pathlib import Path
 from typing import Any, Iterator
 
 import torch
 from torch.utils.data import Dataset
-
+from config.paths import RAW_DATA_DIR
 
 LOGGER = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DATASET_MODULE_DIR = Path(__file__).resolve().parent
-RAW_DATASETS_DIR = DATASET_MODULE_DIR / "raw"
-PROCESSED_DATASETS_DIR = DATASET_MODULE_DIR / "processed"
 SUPPORTED_AUDIO_EXTENSIONS = (
     ".flac",
     ".wav",
@@ -121,7 +116,7 @@ class LibriSpeechRawDataset(AudioReconstructionDataset):
 
     def __init__(
         self,
-        base_dir: str | Path = RAW_DATASETS_DIR,
+        base_dir: str | Path = RAW_DATA_DIR,
         dataset_sub_name: str = "train-clean-100",
         dataset_length_limit: int | None = None,
     ) -> None:

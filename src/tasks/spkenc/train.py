@@ -14,13 +14,11 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
+from config.paths import LOGS_DIR
 from models.custom.ge2e_loss import GE2ELoss
 
 
 LOGGER = logging.getLogger(__name__)
-
-ARTIFACTS_DIR = Path("D:\\projects\\python\\AudioReconstruct\\artifacts")
-TENSORBOARD_DIR = ARTIFACTS_DIR / "tensorboard"
 
 DEFAULT_SEED = 42
 DEFAULT_EPOCHS = 100
@@ -214,7 +212,7 @@ def train_spkenc(
     optimizer = Adam(parameters, lr=learning_rate, weight_decay=weight_decay)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    writer_dir = Path(log_dir) if log_dir is not None else TENSORBOARD_DIR / f"spkenc_train_{timestamp}"
+    writer_dir = Path(log_dir) if log_dir is not None else LOGS_DIR / f"spkenc_train_{timestamp}"
     writer_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(writer_dir))
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
+from config.paths import RAW_DATA_DIR, CHECKPOINTS_DIR, LOGS_DIR, PROCESSED_DATA_DIR
 from data.load_data import load_raw_data
 from data.preprocess.pipeline import run_preprocessing_pipeline
 from datasets.dataset_builder import build_spk_dataset_split
@@ -20,15 +21,6 @@ from models.custom.ge2e_sampler import (
     ge2e_collate,
 )
 from models.registry import get_loss_function, get_model
-
-
-DATA_BASE_DIR = Path("D:\\projects\\python\\AudioReconstruct\\data")
-DATA_RAW_DIR = DATA_BASE_DIR / "raw"
-DATA_PROCESSED_DIR = DATA_BASE_DIR / "processed"
-
-ARTIFACTS_BASE_DIR = Path("D:\\projects\\python\\AudioReconstruct\\artifacts")
-LOG_DIR = ARTIFACTS_BASE_DIR / "logs"
-WEIGHTS_DIR = ARTIFACTS_BASE_DIR / "checkpoints"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -48,7 +40,7 @@ def _get_dataset():
     return load_raw_data(
         dataset_name="LibriSpeech",
         dataset_sub_name="train-clean-100",
-        base_dir=DATA_RAW_DIR,
+        base_dir=RAW_DATA_DIR,
     )
 
 
@@ -118,13 +110,13 @@ def _get_dataloader(train_dataset, val_dataset, test_dataset):
 def _get_weights_path():
     now = datetime.now()
     now_str = now.strftime("%y-%m-%d-%H-%M-%S")
-    return WEIGHTS_DIR / f"spkenc_{now_str}.pth"
+    return CHECKPOINTS_DIR / f"spkenc_{now_str}.pth"
 
 
 def _get_log_dir():
     now = datetime.now()
     now_str = now.strftime("%y-%m-%d-%H-%M-%S")
-    log_dir = LOG_DIR / f"spkenc_{now_str}"
+    log_dir = LOGS_DIR / f"spkenc_{now_str}"
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir
 
@@ -134,7 +126,7 @@ def train_and_evaluate():
     dataset = _get_dataset()
 
     LOGGER.info("Running the preprocessing pipeline...")
-    preprocessed_dataset = run_preprocessing_pipeline(dataset=dataset, save_dir=DATA_PROCESSED_DIR)
+    preprocessed_dataset = run_preprocessing_pipeline(dataset=dataset, save_dir=PROCESSED_DATA_DIR)
     LOGGER.info("Preprocessing done. Dataset size: %s", len(preprocessed_dataset))
 
     LOGGER.info("Splitting the dataset into train/val/test subsets...")

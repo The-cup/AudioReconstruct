@@ -14,12 +14,9 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
+from config.paths import LOGS_DIR
 
 LOGGER = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
-TENSORBOARD_DIR = ARTIFACTS_DIR / "tensorboard"
 
 DEFAULT_SEED = 42
 DEFAULT_EPOCHS = 100
@@ -261,7 +258,7 @@ def train_gan_model(
     )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    writer_dir = Path(log_dir) if log_dir is not None else TENSORBOARD_DIR / f"gan_train_{timestamp}"
+    writer_dir = Path(log_dir) if log_dir is not None else LOGS_DIR / f"gan_train_{timestamp}"
     writer_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(writer_dir))
 

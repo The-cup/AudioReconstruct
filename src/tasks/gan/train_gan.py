@@ -13,20 +13,15 @@ from datasets.dataset_builder import build_gan_dataset_split
 from models.registry import get_model
 from tasks.gan.test import evaluate_gan
 from tasks.gan.train import gan_collate_fn, train_gan_model
+from config.paths import (
+    LOGS_DIR,
+    CHECKPOINTS_DIR, PROCESSED_DATA_DIR, LOW_FREQ_DATA_DIR, SELECTED_EMBEDDED_DIR, PROJECT_ROOT, build_dir_path,
+)
 
 
 LOGGER = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DATA_DIR = PROJECT_ROOT / "data"
-EMBEDDED_VECTOR_DIR = DATA_DIR / "selected"
-PROCESSED_DATA_DIR = DATA_DIR / "processed"
-LOW_FREQ_DATA_DIR = DATA_DIR / "low_freq"
-ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
-CHECKPOINT_DIR = ARTIFACTS_DIR / "checkpoints"
-LOG_DIR = ARTIFACTS_DIR / "logs"
-
-DEFAULT_EPOCHS = 100
+DEFAULT_EPOCHS = 32
 DEFAULT_BATCH_SIZE = 8
 DEFAULT_LEARNING_RATE = 1e-4
 DEFAULT_VALIDATE_EVERY_N_EPOCHS = 50
@@ -43,12 +38,12 @@ def _resolve_device(device: str | None) -> torch.device:
 
 
 def _get_weights_path() -> Path:
-    return CHECKPOINT_DIR / "voice_expand_gan.pth"
+    return CHECKPOINTS_DIR / "voice_expand_gan.pth"
 
 
 def _get_log_dir() -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return LOG_DIR / f"voice_expand_gan_{timestamp}"
+    return LOGS_DIR / f"voice_expand_gan_{timestamp}"
 
 
 def _build_dataloaders(
@@ -126,7 +121,7 @@ def train_and_evaluate(
 
     LOGGER.info("Loading GAN dataset from %s and %s", data_dir, low_freq_data_dir)
     dataset = GanDataset(
-        embedded_vector_dir=EMBEDDED_VECTOR_DIR,
+        embedded_vector_dir=SELECTED_EMBEDDED_DIR,
         processed_dataset_dir=data_dir,
         low_freq_dataset_dir=low_freq_data_dir,
         randomize=True,
@@ -183,13 +178,8 @@ def train_and_evaluate(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train and evaluate the GAN voice expansion model.")
-    parser.add_argument("--data_dir", type=Path, default=PROCESSED_DATA_DIR, help="Processed mel-spectrogram directory.")
-    parser.add_argument(
-        "--low_freq_data_dir",
-        type=Path,
-        default=LOW_FREQ_DATA_DIR,
-        help="Low-frequency mel-spectrogram directory.",
-    )
+    parser.add_argument("--project_root", type=Path, default=PROJECT_ROOT)
+
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size.")
     parser.add_argument("--learning_rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate.")
@@ -204,14 +194,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed.")
     parser.add_argument("--num_workers", type=int, default=DEFAULT_NUM_WORKERS, help="DataLoader workers.")
     parser.add_argument("--device", type=str, default=None, help="Target device, e.g. cpu or cuda.")
-    parser.add_argument("--weights_path", type=Path, default=None, help="Checkpoint output path.")
-    parser.add_argument("--log_dir", type=Path, default=None, help="TensorBoard log directory.")
+    parser.add_argument("--weights_path", type=Path, default=CHECKPOINTS_DIR, help="Checkpoint output path.")
+    parser.add_argument("--log_dir", type=Path, default=LOGS_DIR, help="TensorBoard log directory.")
     return parser
 
 
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+    build_dir_path(args.project_root)
     logging.basicConfig(level=logging.INFO)
     train_and_evaluate(
         data_dir=args.data_dir,
