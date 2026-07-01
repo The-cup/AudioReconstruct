@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 from collections import defaultdict
+from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass
 import logging
 from pathlib import Path
@@ -234,9 +236,11 @@ class GanDatasetItem:
 
 class GanDataset(AudioReconstructionDataset):
     """Dataset for GAN training."""
+
     def __init__(
         self,
         embedded_vector_dir: Path | None = None,
+        embedded_vector_name: str = "embedded_vector.pt",
         processed_dataset_dir: Path | None = None,
         low_freq_dataset_dir: Path | None = None,
         randomize: bool = True,
@@ -244,23 +248,29 @@ class GanDataset(AudioReconstructionDataset):
         super().__init__()
         self.randomize = randomize
         self.embedded_vector_dir = embedded_vector_dir
+        self.embedded_vector_name = embedded_vector_name
         self.processed_dataset_dir = processed_dataset_dir
         self.low_freq_dataset_dir = low_freq_dataset_dir
         self._data_files: list[GanDatasetItem] = []
         if processed_dataset_dir is not None:
-            self.build_from_dir(processed_dataset_dir, low_freq_dataset_dir=low_freq_dataset_dir, embedded_vector_dir=embedded_vector_dir)
+            self.build_from_dir(
+                processed_dataset_dir,
+                low_freq_dataset_dir=low_freq_dataset_dir,
+                embedded_vector_dir=embedded_vector_dir,
+            )
 
     def build_from_dir(
         self,
         processed_dataset_dir: Path,
-        low_freq_dataset_dir: Path,
-        embedded_vector_dir: Path,
+        low_freq_dataset_dir: Path | None = None,
+        embedded_vector_dir: Path | None = None,
+        num_workers: int | None = None,
     ) -> None:
         self._data_files = []
 
         processed_dataset_dir = Path(processed_dataset_dir)
-        low_freq_dataset_dir = Path(low_freq_dataset_dir)
-        embedded_vector_dir = Path(embedded_vector_dir)
+        low_freq_dataset_dir = Path(low_freq_dataset_dir) if low_freq_dataset_dir is not None else None
+        embedded_vector_dir = Path(embedded_vector_dir) if embedded_vector_dir is not None else processed_dataset_dir
 
         if not processed_dataset_dir.exists():
             LOGGER.warning("Processed GAN dataset directory does not exist: %s", processed_dataset_dir)
@@ -268,31 +278,38 @@ class GanDataset(AudioReconstructionDataset):
         if low_freq_dataset_dir is not None and not low_freq_dataset_dir.exists():
             LOGGER.warning("Low-frequency GAN dataset directory does not exist: %s", low_freq_dataset_dir)
             return
+        if embedded_vector_dir is not None and not embedded_vector_dir.exists():
+            LOGGER.warning("Embedded vector directory does not exist: %s", embedded_vector_dir)
+            return
 
         speaker_dirs = [speaker_dir for speaker_dir in sorted(processed_dataset_dir.iterdir()) if speaker_dir.is_dir()]
-        for speaker_dir in speaker_dirs:
+        if not speaker_dirs:
+            LOGGER.warning("No speaker directories found in processed GAN dataset directory: %s", processed_dataset_dir)
+            return
+
+        def _build_items_for_speaker(speaker_dir: Path) -> list[GanDatasetItem]:
             speaker_id = speaker_dir.name
-            # embedded_path = speaker_dir / "embedded_vector.pt"
-            embedded_path = embedded_vector_dir / speaker_id / "embedded_vector.pt"
+            embedded_path = embedded_vector_dir / speaker_id / self.embedded_vector_name
             if not embedded_path.exists():
                 LOGGER.warning("Missing embedded vector for speaker %s: %s", speaker_id, embedded_path)
-                continue
+                return []
 
             sample_root_dir = speaker_dir
             low_freq_root_dir = low_freq_dataset_dir / speaker_id if low_freq_dataset_dir is not None else speaker_dir
             if low_freq_dataset_dir is not None and not low_freq_root_dir.exists():
                 LOGGER.warning("Missing low-frequency directory for speaker %s: %s", speaker_id, low_freq_root_dir)
-                continue
+                return []
 
             sample_files = [
                 file_path
                 for file_path in sorted(sample_root_dir.iterdir())
                 if file_path.is_file()
                 and file_path.suffix == ".pt"
-                and file_path.name != "embedded_vector.pt"
+                and file_path.name != self.embedded_vector_name
                 and not file_path.name.endswith("_low.pt")
             ]
 
+            speaker_items: list[GanDatasetItem] = []
             for sample_path in sample_files:
                 low_freq_sample_path = low_freq_root_dir / f"{sample_path.stem}_low.pt"
                 if not low_freq_sample_path.exists():
@@ -303,7 +320,7 @@ class GanDataset(AudioReconstructionDataset):
                         low_freq_sample_path,
                     )
                     continue
-                self._data_files.append(
+                speaker_items.append(
                     GanDatasetItem(
                         speaker_id=speaker_id,
                         embedded_path=embedded_path,
@@ -311,6 +328,20 @@ class GanDataset(AudioReconstructionDataset):
                         low_freq_sample_path=low_freq_sample_path,
                     )
                 )
+            return speaker_items
+
+        cpu_count = os.cpu_count() or 1
+        max_workers = num_workers if num_workers is not None else min(32, max(1, cpu_count))
+        max_workers = min(max_workers, max(1, len(speaker_dirs)))
+
+        if max_workers == 1:
+            for speaker_dir in speaker_dirs:
+                self._data_files.extend(_build_items_for_speaker(speaker_dir))
+            return
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for speaker_items in executor.map(_build_items_for_speaker, speaker_dirs):
+                self._data_files.extend(speaker_items)
 
     def __len__(self) -> int:
         return len(self._data_files)

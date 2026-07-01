@@ -8,15 +8,12 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
+from config.paths import build_dir_path
 from datasets.audio_dataset import GanDataset
 from datasets.dataset_builder import build_gan_dataset_split
 from models.registry import get_model
 from tasks.gan.test import evaluate_gan
 from tasks.gan.train import gan_collate_fn, train_gan_model
-from config.paths import (
-    LOGS_DIR,
-    CHECKPOINTS_DIR, PROCESSED_DATA_DIR, LOW_FREQ_DATA_DIR, SELECTED_EMBEDDED_DIR, PROJECT_ROOT, build_dir_path,
-)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -38,11 +35,13 @@ def _resolve_device(device: str | None) -> torch.device:
 
 
 def _get_weights_path() -> Path:
+    from config.paths import CHECKPOINTS_DIR
     return CHECKPOINTS_DIR / "voice_expand_gan.pth"
 
 
 def _get_log_dir() -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    from config.paths import LOGS_DIR
     return LOGS_DIR / f"voice_expand_gan_{timestamp}"
 
 
@@ -103,8 +102,10 @@ def _build_dataloaders(
 
 def train_and_evaluate(
     *,
-    data_dir: Path = PROCESSED_DATA_DIR,
-    low_freq_data_dir: Path = LOW_FREQ_DATA_DIR,
+    data_dir: Path | None = None,
+    low_freq_data_dir: Path | None = None,
+    embedded_vector_dir: Path | None = None,
+    embedded_vector_name: str = "embedded_vector.pt",
     epochs: int = DEFAULT_EPOCHS,
     batch_size: int = DEFAULT_BATCH_SIZE,
     learning_rate: float = DEFAULT_LEARNING_RATE,
@@ -121,7 +122,8 @@ def train_and_evaluate(
 
     LOGGER.info("Loading GAN dataset from %s and %s", data_dir, low_freq_data_dir)
     dataset = GanDataset(
-        embedded_vector_dir=SELECTED_EMBEDDED_DIR,
+        embedded_vector_dir=embedded_vector_dir,
+        embedded_vector_name=embedded_vector_name,
         processed_dataset_dir=data_dir,
         low_freq_dataset_dir=low_freq_data_dir,
         randomize=True,
@@ -178,8 +180,9 @@ def train_and_evaluate(
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train and evaluate the GAN voice expansion model.")
-    parser.add_argument("--project_root", type=Path, default=PROJECT_ROOT)
+    parser.add_argument("--project_root", type=Path, default=None)
 
+    parser.add_argument("--embedded_name", type=str, default="embedded_vector.pt", help="Name of the embedding.")
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size.")
     parser.add_argument("--learning_rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate.")
@@ -194,8 +197,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed.")
     parser.add_argument("--num_workers", type=int, default=DEFAULT_NUM_WORKERS, help="DataLoader workers.")
     parser.add_argument("--device", type=str, default=None, help="Target device, e.g. cpu or cuda.")
-    parser.add_argument("--weights_path", type=Path, default=CHECKPOINTS_DIR, help="Checkpoint output path.")
-    parser.add_argument("--log_dir", type=Path, default=LOGS_DIR, help="TensorBoard log directory.")
+    parser.add_argument("--weights_path", type=Path, default=None, help="Checkpoint output path.")
     return parser
 
 
@@ -204,9 +206,13 @@ def main() -> None:
     args = parser.parse_args()
     build_dir_path(args.project_root)
     logging.basicConfig(level=logging.INFO)
+
+    from config.paths import PROCESSED_DATA_DIR, LOW_FREQ_DATA_DIR, LOGS_DIR, SELECTED_EMBEDDED_DIR
     train_and_evaluate(
-        data_dir=args.data_dir,
-        low_freq_data_dir=args.low_freq_data_dir,
+        data_dir=PROCESSED_DATA_DIR,
+        low_freq_data_dir=LOW_FREQ_DATA_DIR,
+        embedded_vector_dir=SELECTED_EMBEDDED_DIR,
+        embedded_vector_name="embedded_vector",
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
@@ -217,7 +223,7 @@ def main() -> None:
         num_workers=args.num_workers,
         device=args.device,
         weights_path=args.weights_path,
-        log_dir=args.log_dir,
+        log_dir=LOGS_DIR,
     )
 
 

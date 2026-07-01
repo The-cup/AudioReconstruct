@@ -1,0 +1,20 @@
+{
+    "logLevel": 1,
+    "logPath": "/var/log/oss-connector/connector.log",
+    "auditPath": "/var/log/oss-connector/audit.log",
+    "expireTimeSec": 120,
+    "prefetch": {
+        "vcpus": 16,
+        "workers": 16,
+        "maxCacheAdviseGB": -1
+    },
+    "datasetConfig": {
+        "prefetchConcurrency": 24,
+        "prefetchWorker": 2
+    },
+    "checkpointConfig": {
+        "prefetchConcurrency": 24,
+        "prefetchWorker": 4,
+        "uploadConcurrency": 64
+    }
+}

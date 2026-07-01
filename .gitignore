@@ -12,4 +12,5 @@ __pycache__/
 artifacts/
 
 .idea/
+ps.ps1
 
