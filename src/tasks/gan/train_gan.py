@@ -10,7 +10,6 @@ from torch.utils.data import DataLoader
 
 from config.paths import build_dir_path
 from datasets.audio_dataset import GanDataset
-from datasets.dataset_builder import build_gan_dataset_split
 from models.registry import get_model
 from tasks.gan.test import evaluate_gan
 from tasks.gan.train import gan_collate_fn, train_gan_model
@@ -26,6 +25,7 @@ DEFAULT_TRAIN_RATIO = 0.8
 DEFAULT_VAL_RATIO = 0.1
 DEFAULT_SEED = 42
 DEFAULT_NUM_WORKERS = 1
+DEFAULT_EMBEDDING_VECTOR_NAME = "embedded_vector.pt"
 
 
 def _resolve_device(device: str | None) -> torch.device:
@@ -45,22 +45,45 @@ def _get_log_dir() -> Path:
     return LOGS_DIR / f"voice_expand_gan_{timestamp}"
 
 
+def _load_oss_datasets() -> tuple[dict, dict, dict]:
+    try:
+        from oss.oss_dataset import oss_test_dataset, oss_train_dataset, oss_val_dataset
+    except Exception as exc:
+        raise RuntimeError("Failed to import OSS GAN datasets from src/oss/oss_dataset.py.") from exc
+    return oss_train_dataset, oss_val_dataset, oss_test_dataset
+
+
+def _validate_oss_dataset(name: str, dataset_obj) -> None:
+    if dataset_obj is None:
+        raise ValueError(f"{name} dataset is None.")
+    required_keys = ("sample", "low_freq", "embedding")
+    for key in required_keys:
+        if key not in dataset_obj:
+            raise KeyError(f"{name} dataset is missing required key: {key}")
+    try:
+        dataset_length = len(dataset_obj["sample"])
+    except Exception as exc:
+        raise RuntimeError(f"Failed to determine length for {name} dataset.") from exc
+    if dataset_length <= 0:
+        raise RuntimeError(f"{name} dataset is empty.")
+
+
 def _build_dataloaders(
-    dataset: GanDataset,
     *,
+    train_dataset_obj,
+    val_dataset_obj,
+    test_dataset_obj,
     batch_size: int,
-    train_ratio: float,
-    val_ratio: float,
-    seed: int,
     num_workers: int,
     device: torch.device,
-) -> tuple[DataLoader, DataLoader | None, DataLoader]:
-    train_dataset, val_dataset, test_dataset = build_gan_dataset_split(
-        dataset=dataset,
-        train_ratio=train_ratio,
-        val_ratio=val_ratio,
-        seed=seed,
-    )
+) -> tuple[DataLoader, DataLoader, DataLoader]:
+    train_dataset = GanDataset(oss_dataset=train_dataset_obj)
+    val_dataset = GanDataset(oss_dataset=val_dataset_obj)
+    test_dataset = GanDataset(oss_dataset=test_dataset_obj)
+
+    _validate_oss_dataset("train", train_dataset_obj)
+    _validate_oss_dataset("validation", val_dataset_obj)
+    _validate_oss_dataset("test", test_dataset_obj)
 
     pin_memory = device.type == "cuda"
     persistent_workers = num_workers > 0
@@ -75,18 +98,16 @@ def _build_dataloaders(
         collate_fn=gan_collate_fn,
         drop_last=False,
     )
-    val_dataloader = None
-    if len(val_dataset) > 0:
-        val_dataloader = DataLoader(
-            dataset=val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=persistent_workers,
-            collate_fn=gan_collate_fn,
-            drop_last=False,
-        )
+    val_dataloader = DataLoader(
+        dataset=val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+        collate_fn=gan_collate_fn,
+        drop_last=False,
+    )
     test_dataloader = DataLoader(
         dataset=test_dataset,
         batch_size=batch_size,
@@ -97,21 +118,23 @@ def _build_dataloaders(
         collate_fn=gan_collate_fn,
         drop_last=False,
     )
+
+    if len(train_dataloader) <= 0:
+        raise RuntimeError("GAN train dataloader is empty.")
+    if len(val_dataloader) <= 0:
+        raise RuntimeError("GAN validation dataloader is empty.")
+    if len(test_dataloader) <= 0:
+        raise RuntimeError("GAN test dataloader is empty.")
+
     return train_dataloader, val_dataloader, test_dataloader
 
 
 def train_and_evaluate(
     *,
-    data_dir: Path | None = None,
-    low_freq_data_dir: Path | None = None,
-    embedded_vector_dir: Path | None = None,
-    embedded_vector_name: str = "embedded_vector.pt",
     epochs: int = DEFAULT_EPOCHS,
     batch_size: int = DEFAULT_BATCH_SIZE,
     learning_rate: float = DEFAULT_LEARNING_RATE,
     validate_every_n_epochs: int = DEFAULT_VALIDATE_EVERY_N_EPOCHS,
-    train_ratio: float = DEFAULT_TRAIN_RATIO,
-    val_ratio: float = DEFAULT_VAL_RATIO,
     seed: int = DEFAULT_SEED,
     num_workers: int = DEFAULT_NUM_WORKERS,
     device: str | None = None,
@@ -120,24 +143,15 @@ def train_and_evaluate(
 ) -> dict[str, float | int]:
     resolved_device = _resolve_device(device)
 
-    LOGGER.info("Loading GAN dataset from %s and %s", data_dir, low_freq_data_dir)
-    dataset = GanDataset(
-        embedded_vector_dir=embedded_vector_dir,
-        embedded_vector_name=embedded_vector_name,
-        processed_dataset_dir=data_dir,
-        low_freq_dataset_dir=low_freq_data_dir,
-        randomize=True,
-    )
-    if len(dataset) == 0:
-        raise RuntimeError("GAN dataset is empty. Please prepare processed and low-frequency samples first.")
+    LOGGER.info("Loading GAN OSS datasets...")
+    oss_train_dataset, oss_val_dataset, oss_test_dataset = _load_oss_datasets()
 
     LOGGER.info("Building GAN dataloaders...")
     train_dataloader, val_dataloader, test_dataloader = _build_dataloaders(
-        dataset,
+        train_dataset_obj=oss_train_dataset,
+        val_dataset_obj=oss_val_dataset,
+        test_dataset_obj=oss_test_dataset,
         batch_size=batch_size,
-        train_ratio=train_ratio,
-        val_ratio=val_ratio,
-        seed=seed,
         num_workers=num_workers,
         device=resolved_device,
     )
@@ -181,8 +195,6 @@ def train_and_evaluate(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train and evaluate the GAN voice expansion model.")
     parser.add_argument("--project_root", type=Path, default=None)
-
-    parser.add_argument("--embedded_name", type=str, default="embedded_vector.pt", help="Name of the embedding.")
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size.")
     parser.add_argument("--learning_rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate.")
@@ -192,8 +204,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_VALIDATE_EVERY_N_EPOCHS,
         help="Validation interval in epochs.",
     )
-    parser.add_argument("--train_ratio", type=float, default=DEFAULT_TRAIN_RATIO, help="Training split ratio.")
-    parser.add_argument("--val_ratio", type=float, default=DEFAULT_VAL_RATIO, help="Validation split ratio.")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed.")
     parser.add_argument("--num_workers", type=int, default=DEFAULT_NUM_WORKERS, help="DataLoader workers.")
     parser.add_argument("--device", type=str, default=None, help="Target device, e.g. cpu or cuda.")
@@ -204,21 +214,19 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
-    build_dir_path(args.project_root)
+    project_root = args.project_root or Path(__file__).resolve().parents[3]
+    try:
+        build_dir_path(project_root)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to build project directory paths from {project_root}.") from exc
     logging.basicConfig(level=logging.INFO)
 
-    from config.paths import PROCESSED_DATA_DIR, LOW_FREQ_DATA_DIR, LOGS_DIR, SELECTED_EMBEDDED_DIR
+    from config.paths import LOGS_DIR
     train_and_evaluate(
-        data_dir=PROCESSED_DATA_DIR,
-        low_freq_data_dir=LOW_FREQ_DATA_DIR,
-        embedded_vector_dir=SELECTED_EMBEDDED_DIR,
-        embedded_vector_name="embedded_vector",
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         validate_every_n_epochs=args.validate_every_n_epochs,
-        train_ratio=args.train_ratio,
-        val_ratio=args.val_ratio,
         seed=args.seed,
         num_workers=args.num_workers,
         device=args.device,

@@ -12,7 +12,6 @@ from torch import Tensor, nn
 from torch.optim import Adam
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from tqdm.auto import tqdm
 
 from config.paths import LOGS_DIR
 
@@ -63,29 +62,15 @@ def _stack_tensors(items: list[Any]) -> Tensor:
 
 
 def gan_collate_fn(batch: list[dict[str, Any]]) -> dict[str, Any]:
-    """Collate GAN samples into a batched dictionary.
-
-    The dataset already returns loaded tensors. This collate function keeps
-    path metadata as lists and stacks tensor fields for model consumption.
-    """
+    """Collate GAN samples into a batched dictionary."""
     if not batch:
         raise ValueError("Cannot collate an empty batch.")
 
-    speaker_ids = [item["speaker_id"] for item in batch]
-    embedded_paths = [item["embedded_path"] for item in batch]
-    sample_paths = [item["sample_path"] for item in batch]
-    low_freq_sample_paths = [item["low_freq_sample_path"] for item in batch]
-
-    collated = {
-        "speaker_id": speaker_ids,
-        "embedded_path": embedded_paths,
-        "sample_path": sample_paths,
-        "low_freq_sample_path": low_freq_sample_paths,
-        "embedded": _stack_tensors([item["embedded"] for item in batch]),
+    return {
+        "embedding": _stack_tensors([item["embedding"] for item in batch]),
         "sample": _stack_tensors([item["sample"] for item in batch]),
-        "low_freq_sample": _stack_tensors([item["low_freq_sample"] for item in batch]),
+        "low_freq": _stack_tensors([item["low_freq"] for item in batch]),
     }
-    return collated
 
 
 def _prepare_spectrogram_batch(batch: Tensor) -> Tensor:
@@ -93,9 +78,7 @@ def _prepare_spectrogram_batch(batch: Tensor) -> Tensor:
         return batch.unsqueeze(1)
     if batch.ndim == 4:
         return batch
-    raise ValueError(
-        "GAN spectrogram batches must have shape (batch, time, mel) or (batch, 1, time, mel)."
-    )
+    raise ValueError("GAN spectrogram batches must have shape (batch, time, mel) or (batch, 1, time, mel).")
 
 
 def _freeze_module(module: nn.Module, requires_grad: bool) -> None:
@@ -124,6 +107,17 @@ def _log_metrics(title: str, metrics: dict[str, float | int]) -> None:
     print(f"{title}: {message}")
 
 
+def _log_progress_percent(stage: str, completed: int, total: int, last_logged_percent: int) -> int:
+    if total <= 0:
+        return last_logged_percent
+
+    current_percent = min(100, int((completed * 100) / total))
+    while last_logged_percent < current_percent:
+        last_logged_percent += 1
+        LOGGER.info("%s progress: %d%%", stage, last_logged_percent)
+    return last_logged_percent
+
+
 def evaluate_gan_model(
     model: nn.Module,
     dataloader: DataLoader,
@@ -147,24 +141,18 @@ def evaluate_gan_model(
     generated_min = math.inf
     generated_max = -math.inf
 
-    noise_generator = torch.Generator(device=resolved_device.type)
-    noise_generator.manual_seed(seed)
+    total_steps = len(dataloader)
+    last_logged_percent = 0
 
     with torch.no_grad():
-        progress = tqdm(dataloader, desc="Evaluating GAN", leave=False)
-        for batch in progress:
-            low_freq_sample = _prepare_spectrogram_batch(batch["low_freq_sample"].to(resolved_device))
+        for batch_index, batch in enumerate(dataloader, start=1):
+            low_freq = _prepare_spectrogram_batch(batch["low_freq"].to(resolved_device))
+            embedding = batch["embedding"].to(resolved_device)
             target_sample = _prepare_spectrogram_batch(batch["sample"].to(resolved_device))
-            noise = torch.randn(
-                low_freq_sample.shape,
-                device=resolved_device,
-                dtype=low_freq_sample.dtype,
-                generator=noise_generator,
-            )
 
-            generated = model.generate(low_freq_sample, noise)
-            discriminator_loss = model.discriminator_loss(generated, low_freq_sample, target_sample)
-            generator_loss = model.generator_loss(generated, low_freq_sample, target_sample)
+            generated = model.generate(low_freq, embedding)
+            discriminator_loss = model.discriminator_loss(generated, low_freq, target_sample)
+            generator_loss = model.generator_loss(generated, low_freq, target_sample)
 
             generated_cpu = generated.detach().float().cpu()
             flattened = generated_cpu.reshape(-1)
@@ -178,11 +166,8 @@ def evaluate_gan_model(
             total_generator_loss += float(generator_loss.detach().cpu().item())
             total_discriminator_loss += float(discriminator_loss.detach().cpu().item())
             total_batches += 1
-            total_samples += int(low_freq_sample.shape[0])
-            progress.set_postfix(
-                generator_loss=f"{float(generator_loss.detach().cpu().item()):.4f}",
-                discriminator_loss=f"{float(discriminator_loss.detach().cpu().item()):.4f}",
-            )
+            total_samples += int(low_freq.shape[0])
+            last_logged_percent = _log_progress_percent("Evaluation", batch_index, total_steps, last_logged_percent)
 
     if model_was_training:
         model.train()
@@ -269,8 +254,6 @@ def train_gan_model(
     best_val_loss = math.inf
     best_state: dict[str, Any] | None = None
     global_step = 0
-    noise_generator = torch.Generator(device=resolved_device.type)
-    noise_generator.manual_seed(seed)
 
     try:
         for epoch in range(epochs):
@@ -284,29 +267,20 @@ def train_gan_model(
             epoch_samples = 0
             epoch_batches = 0
 
-            progress = tqdm(
-                train_dataloader,
-                desc=f"GAN Epoch {epoch + 1}/{epochs}",
-                leave=False,
-            )
-            for batch in progress:
-                low_freq_sample = _prepare_spectrogram_batch(batch["low_freq_sample"].to(resolved_device))
+            total_steps = len(train_dataloader)
+            last_logged_percent = 0
+            for batch_index, batch in enumerate(train_dataloader, start=1):
+                low_freq = _prepare_spectrogram_batch(batch["low_freq"].to(resolved_device))
+                embedding = batch["embedding"].to(resolved_device)
                 target_sample = _prepare_spectrogram_batch(batch["sample"].to(resolved_device))
-                noise = torch.randn(
-                    low_freq_sample.shape,
-                    device=resolved_device,
-                    dtype=low_freq_sample.dtype,
-                    generator=noise_generator,
-                )
 
-                # Update discriminator.
                 _freeze_module(model.discriminator, True)
                 discriminator_optimizer.zero_grad(set_to_none=True)
                 with torch.no_grad():
-                    generated_for_discriminator = model.generate(low_freq_sample, noise)
+                    generated_for_discriminator = model.generate(low_freq, embedding)
                 discriminator_loss = model.discriminator_loss(
                     generated_for_discriminator,
-                    low_freq_sample,
+                    low_freq,
                     target_sample,
                 )
                 discriminator_loss.backward()
@@ -314,13 +288,12 @@ def train_gan_model(
                     torch.nn.utils.clip_grad_norm_(discriminator_parameters, max_grad_norm)
                 discriminator_optimizer.step()
 
-                # Update generator.
                 _freeze_module(model.discriminator, False)
                 generator_optimizer.zero_grad(set_to_none=True)
-                generated_for_generator = model.generate(low_freq_sample, noise)
+                generated_for_generator = model.generate(low_freq, embedding)
                 generator_loss = model.generator_loss(
                     generated_for_generator,
-                    low_freq_sample,
+                    low_freq,
                     target_sample,
                 )
                 generator_loss.backward()
@@ -332,15 +305,17 @@ def train_gan_model(
                 loss_d_value = float(discriminator_loss.detach().cpu().item())
                 epoch_generator_loss += loss_g_value
                 epoch_discriminator_loss += loss_d_value
-                epoch_samples += int(low_freq_sample.shape[0])
+                epoch_samples += int(low_freq.shape[0])
                 epoch_batches += 1
                 global_step += 1
 
                 writer.add_scalar("train/generator_batch_loss", loss_g_value, global_step)
                 writer.add_scalar("train/discriminator_batch_loss", loss_d_value, global_step)
-                progress.set_postfix(
-                    generator_loss=f"{loss_g_value:.4f}",
-                    discriminator_loss=f"{loss_d_value:.4f}",
+                last_logged_percent = _log_progress_percent(
+                    f"Training epoch {epoch + 1}/{epochs}",
+                    batch_index,
+                    total_steps,
+                    last_logged_percent,
                 )
 
             average_generator_loss = epoch_generator_loss / max(1, epoch_batches)

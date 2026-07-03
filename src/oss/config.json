@@ -1,7 +1,7 @@
 {
     "logLevel": 1,
-    "logPath": "/var/log/oss-connector/connector.log",
-    "auditPath": "/var/log/oss-connector/audit.log",
+    "logPath": "/mnt/data/oss-connector/connector.log",
+    "auditPath": "/mnt/data/oss-connector/audit.log",
     "expireTimeSec": 120,
     "prefetch": {
         "vcpus": 16,

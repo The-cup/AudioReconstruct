@@ -12,9 +12,13 @@ CHECKPOINTS_DIR: Path | None = None
 LOGS_DIR: Path | None = None
 REPORTS_DIR: Path | None = None
 
-def build_dir_path(project_path: Path):
+def build_dir_path(project_path: Path | None):
     global DATA_DIR, RAW_DATA_DIR, LOW_FREQ_DATA_DIR, SELECTED_EMBEDDED_DIR, PROCESSED_DATA_DIR, \
         ARTIFACTS_DIR, CHECKPOINTS_DIR, LOGS_DIR, REPORTS_DIR
+
+    if project_path is None:
+        return
+
     DATA_DIR = project_path / "data"
     RAW_DATA_DIR = DATA_DIR / "raw"
     LOW_FREQ_DATA_DIR = DATA_DIR / "low_freq"
