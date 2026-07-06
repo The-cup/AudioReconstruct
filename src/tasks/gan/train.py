@@ -202,6 +202,7 @@ def train_gan_model(
     *,
     epochs: int = DEFAULT_EPOCHS,
     learning_rate: float = DEFAULT_LEARNING_RATE,
+    d_learning_rate: float = DEFAULT_LEARNING_RATE,
     weight_decay: float = DEFAULT_WEIGHT_DECAY,
     device: torch.device | str | None = None,
     log_dir: Path | None = None,
@@ -237,7 +238,7 @@ def train_gan_model(
     )
     discriminator_optimizer = Adam(
         discriminator_parameters,
-        lr=learning_rate,
+        lr=d_learning_rate,
         betas=adam_betas,
         weight_decay=weight_decay,
     )
@@ -309,14 +310,15 @@ def train_gan_model(
                 epoch_batches += 1
                 global_step += 1
 
-                writer.add_scalar("train/generator_batch_loss", loss_g_value, global_step)
-                writer.add_scalar("train/discriminator_batch_loss", loss_d_value, global_step)
-                last_logged_percent = _log_progress_percent(
-                    f"Training epoch {epoch + 1}/{epochs}",
-                    batch_index,
-                    total_steps,
-                    last_logged_percent,
-                )
+                if batch_index % 10 == 0:
+                    writer.add_scalar("train/generator_batch_loss", loss_g_value, global_step)
+                    writer.add_scalar("train/discriminator_batch_loss", loss_d_value, global_step)
+                    last_logged_percent = _log_progress_percent(
+                        f"Training epoch {epoch + 1}/{epochs}",
+                        batch_index,
+                        total_steps,
+                        last_logged_percent,
+                    )
 
             average_generator_loss = epoch_generator_loss / max(1, epoch_batches)
             average_discriminator_loss = epoch_discriminator_loss / max(1, epoch_batches)

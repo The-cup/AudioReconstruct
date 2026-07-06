@@ -30,7 +30,7 @@ MANIFEST_LOW_FREQ_VAL = str(OSS_MNT_PATH / "data" / "manifest-low-freq-val.txt")
 def transform(object):
     try:
         raw_bytes = object.read()
-        tensor = torch.load(io.BytesIO(raw_bytes), map_location="cuda", weights_only=True)
+        tensor = torch.load(io.BytesIO(raw_bytes), map_location="cpu", weights_only=True)
     except Exception as e:
         raise e
     return tensor

@@ -76,10 +76,11 @@ def _build_dataloaders(
     batch_size: int,
     num_workers: int,
     device: torch.device,
+    prefetch_factor: int,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
-    train_dataset = GanDataset(oss_dataset=train_dataset_obj)
-    val_dataset = GanDataset(oss_dataset=val_dataset_obj)
-    test_dataset = GanDataset(oss_dataset=test_dataset_obj)
+    train_dataset = GanDataset(oss_dataset_type="train")
+    val_dataset = GanDataset(oss_dataset_type="val")
+    test_dataset = GanDataset(oss_dataset_type="test")
 
     _validate_oss_dataset("train", train_dataset_obj)
     _validate_oss_dataset("validation", val_dataset_obj)
@@ -97,6 +98,7 @@ def _build_dataloaders(
         persistent_workers=persistent_workers,
         collate_fn=gan_collate_fn,
         drop_last=False,
+        prefetch_factor=prefetch_factor,
     )
     val_dataloader = DataLoader(
         dataset=val_dataset,
@@ -107,6 +109,7 @@ def _build_dataloaders(
         persistent_workers=persistent_workers,
         collate_fn=gan_collate_fn,
         drop_last=False,
+        prefetch_factor=prefetch_factor,
     )
     test_dataloader = DataLoader(
         dataset=test_dataset,
@@ -117,6 +120,7 @@ def _build_dataloaders(
         persistent_workers=persistent_workers,
         collate_fn=gan_collate_fn,
         drop_last=False,
+        prefetch_factor=prefetch_factor,
     )
 
     if len(train_dataloader) <= 0:
@@ -134,12 +138,14 @@ def train_and_evaluate(
     epochs: int = DEFAULT_EPOCHS,
     batch_size: int = DEFAULT_BATCH_SIZE,
     learning_rate: float = DEFAULT_LEARNING_RATE,
+    d_learning_rate: float = DEFAULT_LEARNING_RATE,
     validate_every_n_epochs: int = DEFAULT_VALIDATE_EVERY_N_EPOCHS,
     seed: int = DEFAULT_SEED,
     num_workers: int = DEFAULT_NUM_WORKERS,
     device: str | None = None,
     weights_path: Path | None = None,
     log_dir: Path | None = None,
+    prefetch_factor: int = 4,
 ) -> dict[str, float | int]:
     resolved_device = _resolve_device(device)
 
@@ -154,6 +160,7 @@ def train_and_evaluate(
         batch_size=batch_size,
         num_workers=num_workers,
         device=resolved_device,
+        prefetch_factor=prefetch_factor,
     )
 
     LOGGER.info("Getting GAN model...")
@@ -170,6 +177,7 @@ def train_and_evaluate(
         val_dataloader=val_dataloader,
         epochs=epochs,
         learning_rate=learning_rate,
+        d_learning_rate=d_learning_rate,
         device=resolved_device,
         log_dir=resolved_log_dir,
         weights_path=resolved_weights_path,
@@ -198,6 +206,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size.")
     parser.add_argument("--learning_rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate.")
+    parser.add_argument("--d_learning_rate", type=float, default=DEFAULT_LEARNING_RATE, help="Discriminator Learning Rate.")
+    parser.add_argument("--prefetch_factor", type=int, default=4, help="Prefetch factor.")
     parser.add_argument(
         "--validate_every_n_epochs",
         type=int,
@@ -208,6 +218,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num_workers", type=int, default=DEFAULT_NUM_WORKERS, help="DataLoader workers.")
     parser.add_argument("--device", type=str, default=None, help="Target device, e.g. cpu or cuda.")
     parser.add_argument("--weights_path", type=Path, default=None, help="Checkpoint output path.")
+    parser.add_argument("--log_dir", type=Path, default=None, help="Log directory.")
     return parser
 
 
@@ -222,16 +233,21 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
     from config.paths import LOGS_DIR
+    import torch.multiprocessing as mp
+    mp.set_start_method('spawn', force=True)
+    LOGS_DIR = args.log_dir or Path("/mnt/data/AudioReconstruct/artifacts/logs/voice_expand_gan/")
     train_and_evaluate(
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        d_learning_rate=args.d_learning_rate,
         validate_every_n_epochs=args.validate_every_n_epochs,
         seed=args.seed,
         num_workers=args.num_workers,
         device=args.device,
         weights_path=args.weights_path,
         log_dir=LOGS_DIR,
+        prefetch_factor=args.prefetch_factor
     )
 
 

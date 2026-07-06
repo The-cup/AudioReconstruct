@@ -11,6 +11,7 @@ from typing import Any, Iterator
 import torch
 from torch.utils.data import Dataset
 from config.paths import RAW_DATA_DIR
+from oss.oss_dataset import get_oss_dataset
 
 LOGGER = logging.getLogger(__name__)
 
@@ -243,7 +244,7 @@ class GanDataset(AudioReconstructionDataset):
         processed_dataset_dir: Path | None = None,
         low_freq_dataset_dir: Path | None = None,
         randomize: bool = True,
-        oss_dataset = None,
+        oss_dataset_type = None,
     ) -> None:
         super().__init__()
         self.randomize = randomize
@@ -252,18 +253,15 @@ class GanDataset(AudioReconstructionDataset):
         self.processed_dataset_dir = processed_dataset_dir
         self.low_freq_dataset_dir = low_freq_dataset_dir
         self._data_files: list[GanDatasetItem] = []
-        self.oss_dataset = oss_dataset
+        self.oss_dataset_type = oss_dataset_type
         # if processed_dataset_dir is not None:
         #     self.build_from_dir(
         #         processed_dataset_dir,
         #         low_freq_dataset_dir=low_freq_dataset_dir,
         #         embedded_vector_dir=embedded_vector_dir,
         #     )
-        if oss_dataset is not None:
-            self.build_from_oss_dataset(oss_dataset)
-        else:
-            raise ValueError("Either 'processed_dataset_dir' or 'oss_dataset' must be provided.")
-
+        if self.oss_dataset_type not in ["train", "test", "val"]:
+            raise ValueError("'oss_dataset_type' must be either 'train', 'test', or 'val'.")
 
     def build_from_dir(
         self,
@@ -349,58 +347,36 @@ class GanDataset(AudioReconstructionDataset):
             for speaker_items in executor.map(_build_items_for_speaker, speaker_dirs):
                 self._data_files.extend(speaker_items)
 
-
-    def build_from_oss_dataset(self, oss_dataset_obj=None):
-        if oss_dataset_obj is None:
-            raise ValueError("OSS dataset object is None")
-
-        required_keys = ("sample", "low_freq", "embedding")
-        for key in required_keys:
-            if key not in oss_dataset_obj:
-                raise KeyError(f"OSS GAN dataset is missing required key: {key}")
-
-        sample_length = len(oss_dataset_obj["sample"])
-        low_freq_length = len(oss_dataset_obj["low_freq"])
-        embedding_length = len(oss_dataset_obj["embedding"])
-        if sample_length <= 0:
-            raise RuntimeError("OSS GAN sample dataset is empty.")
-        if low_freq_length <= 0:
-            raise RuntimeError("OSS GAN low-frequency dataset is empty.")
-        if embedding_length <= 0:
-            raise RuntimeError("OSS GAN embedding dataset is empty.")
-        if sample_length != low_freq_length or sample_length != embedding_length:
-            raise ValueError(
-                "OSS GAN dataset lengths do not match across sample, low_freq, and embedding.")
-
-        self.oss_dataset = oss_dataset_obj
-        return self
-
+    def get_oss_dataset_obj(self):
+        from oss.oss_dataset import oss_train_dataset, oss_test_dataset, oss_val_dataset
+        if self.oss_dataset_type == "train":
+            return oss_train_dataset
+        elif self.oss_dataset_type == "test":
+            return oss_test_dataset
+        elif self.oss_dataset_type == "val":
+            return oss_val_dataset
 
     def __len__(self) -> int:
-        if self.oss_dataset is not None:
+        if self.oss_dataset_type is not None:
             try:
-                return len(self.oss_dataset["sample"])
+                oss_dataset_obj = self.get_oss_dataset_obj()
+                return len(oss_dataset_obj["sample"])
             except KeyError as exc:
                 raise KeyError("OSS GAN dataset is missing required key: sample") from exc
-        return len(self._data_files)
+        else:
+            raise RuntimeError("GanDataset is empty and has no OSS dataset backing.")
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        if self.oss_dataset is not None:
+        if self.oss_dataset_type is not None:
             try:
+                oss_dataset_obj = self.get_oss_dataset_obj()
                 return {
-                    "embedding": self.oss_dataset["embedding"][idx],
-                    "sample": self.oss_dataset["sample"][idx],
-                    "low_freq": self.oss_dataset["low_freq"][idx],
+                    "embedding": oss_dataset_obj["embedding"][idx],
+                    "sample": oss_dataset_obj["sample"][idx],
+                    "low_freq": oss_dataset_obj["low_freq"][idx],
                 }
             except KeyError as exc:
                 raise KeyError(f"OSS GAN dataset is missing required key: {exc.args[0]}") from exc
 
-        if not self._data_files:
+        else:
             raise RuntimeError("GanDataset is empty and has no OSS dataset backing.")
-
-        item = self._data_files[idx]
-        return {
-            "embedding": torch.load(item.embedded_path, map_location="cpu"),
-            "sample": torch.load(item.sample_path, map_location="cpu"),
-            "low_freq": torch.load(item.low_freq_sample_path, map_location="cpu"),
-        }

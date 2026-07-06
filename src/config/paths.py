@@ -25,7 +25,7 @@ def build_dir_path(project_path: Path | None):
     SELECTED_EMBEDDED_DIR = DATA_DIR / "selected"
     PROCESSED_DATA_DIR = DATA_DIR / "processed"
 
-    ARTIFACTS_DIR = DATA_DIR / "artifacts"
+    ARTIFACTS_DIR = project_path / "artifacts"
     CHECKPOINTS_DIR = ARTIFACTS_DIR / "checkpoints"
     LOGS_DIR = ARTIFACTS_DIR / "logs"
     REPORTS_DIR = ARTIFACTS_DIR / "reports"
