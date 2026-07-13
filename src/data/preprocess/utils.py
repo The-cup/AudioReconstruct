@@ -5,6 +5,8 @@ from pathlib import Path
 import torch
 import torchaudio
 import torchaudio.functional as F
+import numpy as np
+from pydub import AudioSegment
 
 try:  # pragma: no cover - optional fallback path
     import soundfile as sf
@@ -32,20 +34,55 @@ def ensure_directory(path: str | Path) -> Path:
 
 
 def load_audio_file(file_path: str | Path) -> tuple[torch.Tensor, int]:
+    """
+    加载音频文件，兼容 WAV, FLAC, M4A, MP3, AAC 等所有主流格式
+    返回格式：(waveform: [Channels, Samples], sample_rate: int)
+    与 torchaudio.load 输出完全对齐，保证后续代码零修改
+    """
+    file_path = str(file_path)
+
+    # ========== 原有逻辑 1：torchaudio 加载（支持wav/flac）==========
     try:
-        waveform, sample_rate = torchaudio.load(str(file_path))
+        waveform, sample_rate = torchaudio.load(file_path)
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0)
-        if sample_rate is None:
-            sample_rate = TARGET_SAMPLE_RATE
-        return waveform, int(sample_rate)
-    except Exception:
-        if sf is None:
-            raise
-
-        data, sample_rate = sf.read(str(file_path), always_2d=True)
-        waveform = torch.from_numpy(data.T)
         return waveform, int(sample_rate or TARGET_SAMPLE_RATE)
+    except Exception:
+        pass
+
+    # ========== 原有逻辑 2：soundfile 兜底加载 ==========
+    try:
+        if sf is not None:
+            data, sample_rate = sf.read(file_path, always_2d=True)
+            waveform = torch.from_numpy(data.T).float()
+            return waveform, int(sample_rate or TARGET_SAMPLE_RATE)
+    except Exception:
+        pass
+
+    # ========== 新增逻辑 3：pydub + ffmpeg 兜底（支持m4a/mp3/aac）==========
+    try:
+        # 用 ffmpeg 读取所有压缩音频格式
+        audio = AudioSegment.from_file(file_path)
+        # 转换为 numpy 数组，并归一化到 [-1, 1]（和 torchaudio 格式完全一致）
+        samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+        samples = samples / (2 ** (8 * audio.sample_width - 1))  # 归一化
+
+        # 处理通道维度：[channels, length]
+        if audio.channels == 1:
+            waveform = torch.from_numpy(samples).unsqueeze(0)
+        else:
+            # 双声道：重塑为 [2, length]
+            waveform = torch.from_numpy(samples.reshape(audio.channels, -1))
+
+        return waveform, audio.frame_rate
+
+    # 所有方式都失败，抛出明确错误
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to load audio file: {file_path}\n"
+            f"Supported format: wav, flac, m4a, mp3, aac, ogg\n"
+            f"Error: {str(e)}"
+        ) from e
 
 
 def to_mono(waveform: torch.Tensor) -> torch.Tensor:

@@ -10,8 +10,6 @@ from typing import Any, Iterator
 
 import torch
 from torch.utils.data import Dataset
-from config.paths import RAW_DATA_DIR
-from oss.oss_dataset import get_oss_dataset
 
 LOGGER = logging.getLogger(__name__)
 
@@ -116,10 +114,9 @@ def create_spk_subset(source_ds: "SpkEncDataset", selected_spks: list[str]) -> "
 
 class LibriSpeechRawDataset(AudioReconstructionDataset):
     """Raw LibriSpeech dataset reader."""
-
     def __init__(
         self,
-        base_dir: str | Path = RAW_DATA_DIR,
+        base_dir: str | Path = None,
         dataset_sub_name: str = "train-clean-100",
         dataset_length_limit: int | None = None,
     ) -> None:
