@@ -14,5 +14,5 @@ artifacts/
 .idea/
 ps.ps1
 
-.oss/
+src/oss/
 
