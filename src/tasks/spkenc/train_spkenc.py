@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from config.paths import RAW_DATA_DIR, CHECKPOINTS_DIR, LOGS_DIR, PROCESSED_DATA_DIR
 from data.load_data import load_raw_data
 from data.preprocess.pipeline import run_preprocessing_pipeline
-from datasets.dataset_builder import build_spk_dataset_split
+from local_datasets.dataset_builder import build_spk_dataset_split
 from tasks.spkenc.test import test_spkenc
 from tasks.spkenc.train import train_spkenc
 from models.custom.ge2e_sampler import (

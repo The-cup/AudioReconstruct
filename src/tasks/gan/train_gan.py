@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from config.paths import build_dir_path
-from datasets.audio_dataset import GanDataset
+from local_datasets.audio_dataset import GanDataset
 from models.registry import get_model
 from tasks.gan.test import evaluate_gan
 from tasks.gan.train import gan_collate_fn, train_gan_model
@@ -49,7 +49,7 @@ def _load_oss_datasets() -> tuple[dict, dict, dict]:
     try:
         from oss.oss_dataset import oss_test_dataset, oss_train_dataset, oss_val_dataset
     except Exception as exc:
-        raise RuntimeError("Failed to import OSS GAN datasets from src/oss/oss_dataset.py.") from exc
+        raise RuntimeError("Failed to import OSS GAN local_datasets from src/oss/oss_dataset.py.") from exc
     return oss_train_dataset, oss_val_dataset, oss_test_dataset
 
 
@@ -149,7 +149,7 @@ def train_and_evaluate(
 ) -> dict[str, float | int]:
     resolved_device = _resolve_device(device)
 
-    LOGGER.info("Loading GAN OSS datasets...")
+    LOGGER.info("Loading GAN OSS local_datasets...")
     oss_train_dataset, oss_val_dataset, oss_test_dataset = _load_oss_datasets()
 
     LOGGER.info("Building GAN dataloaders...")

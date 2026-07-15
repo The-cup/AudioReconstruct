@@ -16,7 +16,7 @@ from data.preprocess.utils import (
     TARGET_SAMPLE_RATE,
 )
 
-from datasets.audio_dataset import (
+from local_datasets.audio_dataset import (
     AudioReconstructionDataset,
     SpkEncDataset
 )

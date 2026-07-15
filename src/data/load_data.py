@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 
-from datasets.audio_dataset import (
+from local_datasets.audio_dataset import (
     AudioReconstructionDataset,
     LibriSpeechRawDataset,
 )

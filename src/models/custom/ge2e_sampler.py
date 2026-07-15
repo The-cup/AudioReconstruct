@@ -7,7 +7,7 @@ from typing import Iterator, List, Sequence
 import torch
 from torch.utils.data import Sampler
 
-from datasets.audio_dataset import SpkEncDataset, build_spk_to_items, get_data_files
+from local_datasets.audio_dataset import SpkEncDataset, build_spk_to_items, get_data_files
 
 
 def _cyclic_slice(indices: Sequence[int], start: int, size: int) -> list[int]:
